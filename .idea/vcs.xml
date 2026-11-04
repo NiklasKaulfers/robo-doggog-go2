@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/code/cmake-build-debug/abseil-cpp" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/code/cmake-build-debug/flatbuffers" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/sdk/litert/litert_cc_sdk_build/abseil-cpp" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/sdk/litert/litert_cc_sdk_build/flatbuffers" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/sdk/litert/litert_cc_sdk_build/opencl_headers" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/sdk/unitree_sdk2" vcs="Git" />
+  </component>
+</project>

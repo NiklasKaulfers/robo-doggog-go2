@@ -1,0 +1,31 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/base/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/algorithm/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/cleanup/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/container/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/crc/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/debugging/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/flags/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/functional/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/hash/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/log/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/memory/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/meta/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/numeric/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/profiling/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/random/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/status/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/strings/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/synchronization/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/time/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/types/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-build/absl/utility/cmake_install.cmake",
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/flatbuffers-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/ubuntu/proj/playground/sdk/litert/litert_cc_sdk_build/_deps/abseil-cpp-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

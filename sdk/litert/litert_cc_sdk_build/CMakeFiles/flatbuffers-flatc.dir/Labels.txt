@@ -1,0 +1,13 @@
+# Target labels
+ flatbuffers-flatc
+# Source files and their labels
+/home/ubuntu/example/sdk/litert/litert_cc_sdk_build/CMakeFiles/flatbuffers-flatc
+/home/ubuntu/example/sdk/litert/litert_cc_sdk_build/CMakeFiles/flatbuffers-flatc.rule
+/home/ubuntu/example/sdk/litert/litert_cc_sdk_build/CMakeFiles/flatbuffers-flatc-complete.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-build.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-configure.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-download.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-install.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-mkdir.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-patch.rule
+/home/ubuntu/example/code/cmake-build-debug/flatbuffers-flatc/src/flatbuffers-flatc-stamp/flatbuffers-flatc-update.rule
