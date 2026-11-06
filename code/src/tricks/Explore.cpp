@@ -32,6 +32,7 @@ static constexpr float MIN_CLEARANCE = 0.35f;
 // turning on the spot to look around: after each goal and while nothing is known
 static constexpr float LOOK_AROUND_SPEED = 0.3f;
 static constexpr auto LOOK_AROUND_TIME = std::chrono::milliseconds(2000);
+static constexpr auto LOG_INTERVAL = std::chrono::seconds(3);
 
 static float wrapAngle(float a) {
     return std::atan2(std::sin(a), std::cos(a));
@@ -47,9 +48,22 @@ void Explore::reset() {
     lookAroundUntil = {};
 }
 
+void Explore::log(const std::string& message) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastLog < LOG_INTERVAL) return;
+    lastLog = now;
+    std::cout << "[Explore] " << message << std::endl;
+}
+
 bool Explore::chooseGoal(float rx, float ry) {
     std::vector<core::ObstacleMap::Spot> spots;
     obstacleMap.reachableSpots(rx, ry, MIN_GOAL_DISTANCE, MAX_GOAL_DISTANCE, spots);
+    if (spots.empty()) {
+        // outside the map means the height map and the robot's odometry use different frames
+        log("no reachable spots around " + std::to_string(rx) + ", " + std::to_string(ry) +
+            (obstacleMap.contains(rx, ry) ? " (blocked in or nothing seen yet)" : " (robot position is outside the height map)"));
+        return false;
+    }
 
     std::uniform_real_distribution<float> random(0.0f, RANDOMNESS);
     float bestScore = -1;
@@ -78,7 +92,12 @@ void Explore::step(float& x, float& z) {
     z = 0;
     const auto now = std::chrono::steady_clock::now();
 
-    if (now < lookAroundUntil || !obstacleMap.available()) {
+    if (!obstacleMap.available()) {
+        log("no height map received yet, looking around");
+        z = lookAroundDirection * LOOK_AROUND_SPEED;
+        return;
+    }
+    if (now < lookAroundUntil) {
         z = lookAroundDirection * LOOK_AROUND_SPEED;
         return;
     }
@@ -124,6 +143,7 @@ void Explore::step(float& x, float& z) {
 
     std::vector<std::pair<float, float>> path;
     if (!obstacleMap.planPath(rx, ry, goalX, goalY, GOAL_REACHED, path) || path.size() < 2) {
+        log("no route to the goal, picking another one");
         markFailed();
         return;
     }
@@ -142,6 +162,8 @@ void Explore::step(float& x, float& z) {
     // turn toward the route first, walk once roughly facing it; slow down in front of obstacles
     z = std::clamp(TURN_GAIN * heading, -0.6f, +0.6f);
     x = EXPLORE_SPEED * std::max(0.0f, std::cos(heading));
-    if (clearance < aimDistance)
+    if (clearance < aimDistance) {
         x = std::min(x, std::max(0.0f, 0.5f * (clearance - MIN_CLEARANCE)));
+        if (x == 0) log("obstacle " + std::to_string(clearance) + "m ahead, only turning");
+    }
 }

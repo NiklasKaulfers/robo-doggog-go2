@@ -6,6 +6,7 @@
 #include <chrono>
 #include <deque>
 #include <random>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,8 @@ class Explore {
     std::chrono::steady_clock::time_point lookAroundUntil;
     float lookAroundDirection = 1;
     std::mt19937 rng {std::random_device {}()};
+    // status messages are printed at most every few seconds
+    std::chrono::steady_clock::time_point lastLog;
 
 public:
 
@@ -42,6 +45,7 @@ public:
 private:
 
     bool chooseGoal(float rx, float ry);
+    void log(const std::string& message);
 };
 }
 

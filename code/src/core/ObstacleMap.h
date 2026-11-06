@@ -35,6 +35,8 @@ public:
 
     void init();
     bool available() const;
+    // whether a world position lies inside the remembered area
+    bool contains(float x, float y) const;
 
     // free distance (meters) from (x, y) along a world heading, up to maxDistance, only
     // looking at recently seen terrain. A path is blocked by height jumps a leg can't
@@ -68,6 +70,8 @@ private:
     float heightAt(int ix, int iy, float maxAge) const;
     // cost of walking onto each cell: INFINITY for walls, UNKNOWN_COST for unseen terrain
     void buildCostGrid(std::vector<float>& cost) const;
+    // marks the area under and right around the robot as walkable
+    void clearAroundRobot(std::vector<float>& cost, int sx, int sy) const;
 };
 }
 

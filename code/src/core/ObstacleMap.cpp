@@ -30,6 +30,9 @@ static constexpr float OLD_OBSTACLE_COST = 20.0f;
 static constexpr float UNKNOWN_COST = 2.0f;
 // obstacles are grown by this many cells so the robot's body keeps clear of them
 static constexpr int INFLATE_CELLS = 3;
+// around the robot the LiDAR can't see the ground (blind zone) and may see the robot's own
+// legs; this area is treated as free so planning can always leave the robot's position
+static constexpr int ROBOT_CLEAR_CELLS = 5;
 // limits the planning time if the goal can't be reached
 static constexpr int MAX_EXPANSIONS = 60000;
 
@@ -123,6 +126,13 @@ namespace robo::sdk::core
         return hasMap;
     }
 
+    bool ObstacleMap::contains(float x, float y) const
+    {
+        std::lock_guard<std::mutex> lock(mapMutex);
+        int ix, iy;
+        return hasMap && cellIndex(x, y, ix, iy);
+    }
+
     bool ObstacleMap::cellIndex(float x, float y, int& ix, int& iy) const
     {
         ix = static_cast<int>(std::floor((x - originX) / RESOLUTION));
@@ -209,6 +219,16 @@ namespace robo::sdk::core
         }
     }
 
+    void ObstacleMap::clearAroundRobot(std::vector<float>& cost, int sx, int sy) const
+    {
+        for (int iy = std::max(sy - ROBOT_CLEAR_CELLS, 0); iy <= std::min(sy + ROBOT_CLEAR_CELLS, SIZE - 1); iy++) {
+            for (int ix = std::max(sx - ROBOT_CLEAR_CELLS, 0); ix <= std::min(sx + ROBOT_CLEAR_CELLS, SIZE - 1); ix++) {
+                if ((ix - sx) * (ix - sx) + (iy - sy) * (iy - sy) > ROBOT_CLEAR_CELLS * ROBOT_CLEAR_CELLS) continue;
+                cost[iy * SIZE + ix] = 1.0f;
+            }
+        }
+    }
+
     bool ObstacleMap::planPath(float fromX, float fromY, float toX, float toY, float goalRadius,
                                std::vector<std::pair<float, float>>& path) const
     {
@@ -222,8 +242,7 @@ namespace robo::sdk::core
         std::vector<float> cost;
         buildCostGrid(cost);
 
-        // the robot may already stand inside an inflated area, it has to be able to leave it
-        cost[sy * SIZE + sx] = 1.0f;
+        clearAroundRobot(cost, sx, sy);
 
         // A* over the 8-connected grid
         const float goalCells = goalRadius / RESOLUTION;
@@ -289,7 +308,7 @@ namespace robo::sdk::core
 
         std::vector<float> cost;
         buildCostGrid(cost);
-        cost[sy * SIZE + sx] = 1.0f;
+        clearAroundRobot(cost, sx, sy);
         const auto unknown = [&](int ix, int iy) {
             return ix >= 0 && iy >= 0 && ix < SIZE && iy < SIZE && cost[iy * SIZE + ix] == UNKNOWN_COST;
         };
@@ -309,7 +328,8 @@ namespace robo::sdk::core
             const float distance = std::hypot(wx - fromX, wy - fromY);
 
             // keep every 5th cell in each direction, enough choice without huge lists
-            if (distance >= minDistance && ix % 5 == 0 && iy % 5 == 0) {
+            // goals only on known terrain
+            if (distance >= minDistance && cost[idx] == 1.0f && ix % 5 == 0 && iy % 5 == 0) {
                 const bool frontier = unknown(ix + 1, iy) || unknown(ix - 1, iy) || unknown(ix, iy + 1) || unknown(ix, iy - 1);
                 spots.push_back(Spot {wx, wy, frontier});
             }
@@ -318,9 +338,9 @@ namespace robo::sdk::core
                                          std::pair {ix, iy + 1}, std::pair {ix, iy - 1}}) {
                 if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
                 const int n = ny * SIZE + nx;
-                // only known terrain that isn't blocked by a recent obstacle (old obstacles
+                // through known or unseen terrain, but not through obstacles (old obstacles
                 // count as blocked too, goals shouldn't be behind them)
-                if (visited[n] || cost[n] != 1.0f) continue;
+                if (visited[n] || cost[n] > UNKNOWN_COST) continue;
                 if (std::hypot(originX + (nx + 0.5f) * RESOLUTION - fromX, originY + (ny + 0.5f) * RESOLUTION - fromY) > maxDistance)
                     continue;
                 visited[n] = true;
