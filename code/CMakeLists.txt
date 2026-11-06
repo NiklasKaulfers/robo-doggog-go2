@@ -24,6 +24,8 @@ add_executable( app
         src/main.cpp
         src/core/Control.cpp
         src/core/Control.h
+        src/core/ObstacleMap.cpp
+        src/core/ObstacleMap.h
         src/ml/movenet/Movenet.cpp
         src/ml/movenet/Movenet.h
         src/ml/movenet/Multipose.cpp

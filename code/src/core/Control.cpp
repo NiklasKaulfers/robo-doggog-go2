@@ -29,6 +29,8 @@ static const std::vector<std::string> FSM_STATE_STR = {
 
 namespace robo::sdk::core
 {
+    std::atomic<bool> Control::stopRequested {false};
+
     void Control::init()
     {
         client.SetTimeout(2.0f);
@@ -40,6 +42,20 @@ namespace robo::sdk::core
 
         subController.reset(new unitree::robot::ChannelSubscriber<unitree_go::msg::dds_::WirelessController_>(TOPIC_CONTROLLER));
         subController->InitChannel(std::bind(&Control::updateController, this, std::placeholders::_1), 1);
+
+        avoidClient.SetTimeout(2.0f);
+        avoidClient.Init();
+        // avoidance is only ever switched on here, never off
+        bool avoidEnabled = false;
+        if (avoidClient.SwitchGet(avoidEnabled) != 0 || !avoidEnabled) {
+            if (avoidClient.SwitchSet(true) != 0)
+                std::cerr << "[Control] could not enable obstacle avoidance" << std::endl;
+        }
+    }
+
+    Control::~Control()
+    {
+        releaseControl();
     }
 
     void Control::updateState(const void* message)
@@ -93,34 +109,57 @@ namespace robo::sdk::core
         return client.Sit();
     }
 
-    void Control::stopMovement() {
-        client.StopMove();
+    void Control::stopMovement()
+    {
+        if (apiControl) avoidClient.Move(0.0f, 0.0f, 0.0f);
     }
 
     void Control::rotateLeft(float speed)
     {
-        client.Move(0.0, 0.0, speed);
+        move(0.0f, 0.0f, speed);
     }
 
     void Control::rotateRight(float speed)
     {
-        client.Move(0.0, 0.0, -speed);
+        move(0.0f, 0.0f, -speed);
     }
 
     void Control::moveForwardBackward(float speed)
     {
-        client.Move(speed, 0.0, 0.0);
+        move(speed, 0.0f, 0.0f);
     }
 
     void Control::moveRightLeft(float speed)
     {
-        client.Move(0.0, speed, 0.0);
+        move(0.0f, speed, 0.0f);
     }
 
     void Control::moveRelative(float x, float z)
     {
         // one command so that translation and rotation are applied at the same time
-        client.Move(x, 0.0f, z);
+        move(x, 0.0f, z);
+    }
+
+    void Control::move(float vx, float vy, float vyaw)
+    {
+        if (!apiControl) {
+            if (avoidClient.UseRemoteCommandFromApi(true) != 0) {
+                // never fall back to SportClient::Move, that would bypass avoidance
+                std::cerr << "[Control] avoidance service unavailable, not moving" << std::endl;
+                return;
+            }
+            apiControl = true;
+        }
+        if (avoidClient.Move(vx, vy, vyaw) != 0)
+            std::cerr << "[Control] error in avoidance move" << std::endl;
+    }
+
+    void Control::releaseControl()
+    {
+        if (!apiControl) return;
+        avoidClient.Move(0.0f, 0.0f, 0.0f);
+        avoidClient.UseRemoteCommandFromApi(false);
+        apiControl = false;
     }
 
     float Control::pitch() const
@@ -133,6 +172,24 @@ namespace robo::sdk::core
     {
         std::lock_guard<std::mutex> lock(stateMutex);
         return state.imu_state().rpy()[0];
+    }
+
+    float Control::positionX() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.position()[0];
+    }
+
+    float Control::positionY() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.position()[1];
+    }
+
+    float Control::yaw() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.imu_state().rpy()[2];
     }
 
     float Control::positionZ() const

@@ -2,6 +2,7 @@
 #define FOLLOW_FOLLOWPERSON_H
 
 #include "../core/Control.h"
+#include "../core/ObstacleMap.h"
 #include "unitree/robot/go2/video/video_client.hpp"
 #include "vector"
 #include "../ml/movenet/Multipose.h"
@@ -17,6 +18,10 @@ class FollowPerson {
     // on stairs only slow, straight, forward movement is sent
     bool stairMode = false;
 
+    core::ObstacleMap obstacleMap;
+    // 1 = left, -1 = right; detours keep going around the same side
+    int lastDetourSide = 1;
+
 public:
 
     explicit FollowPerson(core::Control& control);
@@ -27,6 +32,9 @@ private:
 
     void runWithMultipose();
     void stop();
+    // heading (relative to the robot) toward the person that avoids obstacles in the
+    // height map; clearance is set to how far the robot can walk along it
+    float planHeading(float personAngle, float needed, float& clearance);
     // detects stairs from body tilt and height change, the gait itself is left to the robot
     void updateStairMode(int& stairSamples, float& levelHeight);
 };

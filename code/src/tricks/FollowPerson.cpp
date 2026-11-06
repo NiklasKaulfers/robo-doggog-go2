@@ -34,8 +34,22 @@ static constexpr float STAIR_MAX_YAW = 0.2f;
 // tilted sideways this far means the robot is about to slip off a step
 static constexpr float STAIR_MAX_ROLL = 0.35f;      // ~20 degrees
 
+// horizontal field of view of the front camera, maps image position to an angle
+static constexpr float CAMERA_FOV = 2.09f;          // 120 degrees
+static constexpr float TURN_GAIN = 1.0f;
+// route planning: how far ahead the path to the person must be free
+static constexpr float PLAN_LOOKAHEAD = 1.5f;
+// the person's legs show up as an obstacle in the height map, stop checking before them
+static constexpr float PERSON_MARGIN = 0.4f;
+// closer than this to an obstacle the robot only turns, it doesn't walk forward
+static constexpr float MIN_CLEARANCE = 0.35f;
+// detours are tried in steps of ~10 degrees up to ~70 degrees to either side
+static constexpr float DETOUR_STEP = 0.17f;
+static constexpr int DETOUR_STEPS = 7;
+
 FollowPerson::FollowPerson(core::Control& control) : roboControl(control) {
     videoClient.Init();
+    obstacleMap.init();
 }
 
 void FollowPerson::run() {
@@ -54,13 +68,14 @@ void FollowPerson::runWithMultipose() {
     int stairSamples = 0;
     float levelHeight = roboControl.positionZ();
 
-    while (true) {
+    while (!core::Control::stopRequested) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         updateStairMode(stairSamples, levelHeight);
 
         // the remote controller always wins: don't send anything while it is used
         if (roboControl.controllerActive()) {
+            roboControl.releaseControl();
             moving = false;
             continue;
         }
@@ -120,10 +135,22 @@ void FollowPerson::runWithMultipose() {
         // (x: move toward the person if too far, away if too close)
         float x = std::clamp(0.5f * (distance - TARGET_DISTANCE), -0.6f, +0.6f);
 
-        // z: rotate toward the person, proportional to how far off center they are.
-        // with this there is no "perfect center" needed for the rotation to start
+        // direction of the person relative to the robot's heading
         const float middle = targetBox.xmax - (targetBox.xmax - targetBox.xmin) / 2;
-        float z = std::clamp(-2.0f * (middle - 0.5f), -0.6f, +0.6f);
+        const float personAngle = -(middle - 0.5f) * CAMERA_FOV;
+
+        // when walking toward the person, take a detour around obstacles in the way
+        float heading = personAngle;
+        if (x > 0) {
+            float clearance = 0;
+            heading = planHeading(personAngle, std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD), clearance);
+            // slow down in front of obstacles and only turn if nothing is free
+            x = std::min(x, std::max(0.0f, 0.5f * (clearance - MIN_CLEARANCE)));
+        }
+
+        // z: rotate toward the chosen heading, proportional to how far off it is.
+        // with this there is no "perfect center" needed for the rotation to start
+        float z = std::clamp(TURN_GAIN * heading, -0.6f, +0.6f);
 
         if (stairMode) {
             if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
@@ -180,4 +207,39 @@ void FollowPerson::stop() {
     if (!moving) return;
     roboControl.stopMovement();
     moving = false;
+}
+
+float FollowPerson::planHeading(float personAngle, float needed, float& clearance) {
+    if (!obstacleMap.available() || needed <= 0) {
+        clearance = PLAN_LOOKAHEAD;
+        return personAngle;
+    }
+
+    const float x = roboControl.positionX();
+    const float y = roboControl.positionY();
+    const float yaw = roboControl.yaw();
+
+    // try the direct heading first, then detours further and further to the side.
+    // the side of the last detour is tried first so the robot doesn't zig-zag
+    float bestHeading = personAngle;
+    float bestFree = -1;
+    for (int i = 0; i <= 2 * DETOUR_STEPS; i++) {
+        const int k = (i + 1) / 2 * (i % 2 ? lastDetourSide : -lastDetourSide);
+        const float heading = personAngle + k * DETOUR_STEP;
+        const float free = obstacleMap.freeDistance(x, y, yaw + heading, needed);
+
+        if (free >= needed) {
+            if (k != 0) lastDetourSide = k > 0 ? 1 : -1;
+            clearance = free;
+            return heading;
+        }
+        if (free > bestFree) {
+            bestFree = free;
+            bestHeading = heading;
+        }
+    }
+
+    // nothing is completely free: head where there is the most room
+    clearance = bestFree;
+    return bestHeading;
 }

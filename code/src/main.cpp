@@ -1,3 +1,4 @@
+#include <csignal>
 #include <iostream>
 
 #include "core/Control.h"
@@ -11,6 +12,10 @@ using namespace robo::sdk::core;
 int main(int argc, char** argv)
 {
     std::cout << "Start" << std::endl;
+
+    // without this Ctrl+C would leave the avoidance service ignoring the remote controller
+    std::signal(SIGINT, [](int) { Control::stopRequested = true; });
+    std::signal(SIGTERM, [](int) { Control::stopRequested = true; });
 
     unitree::robot::ChannelFactory::Instance()->Init(0, "eth0");
 
