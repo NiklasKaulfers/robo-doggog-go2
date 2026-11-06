@@ -3,6 +3,7 @@
 
 #include "../core/Control.h"
 #include "../core/ObstacleMap.h"
+#include "Explore.h"
 #include "unitree/robot/go2/video/video_client.hpp"
 #include "vector"
 #include <chrono>
@@ -23,6 +24,10 @@ class FollowPerson {
     // 1 = left, -1 = right; detours keep going around the same side
     int lastDetourSide = 1;
 
+    // toggled with the explore button combo on the remote
+    bool exploring = false;
+    Explore explorer {roboControl, obstacleMap};
+
     // last known position (odometry frame) and velocity of the person we follow
     float personX = 0, personY = 0;
     float personVX = 0, personVY = 0;
@@ -40,10 +45,13 @@ private:
 
     void runWithMultipose();
     void stop();
-    // heading (relative to the robot) toward the person that avoids obstacles in the
-    // height map; clearance is set to how far the robot can walk along it
+    // sends a movement, limited to what is safe on stairs
+    void drive(float x, float z);
+    // remembers where the person is and how fast they walk, to predict them when lost
     void updatePersonTrack(float x, float y, bool continuous, std::chrono::steady_clock::time_point now);
-    float planHeading(float personAngle, float needed, float& clearance);
+    // heading (relative to the robot) toward the person that avoids obstacles in the
+    // remembered map; clearance is set to how far the robot can walk along it
+    float planHeading(float personAngle, float distance, float& clearance);
     // detects stairs from body tilt and height change, the gait itself is left to the robot
     void updateStairMode(int& stairSamples, float& levelHeight);
 };

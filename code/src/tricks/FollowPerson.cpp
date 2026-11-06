@@ -46,6 +46,8 @@ static constexpr float MIN_CLEARANCE = 0.35f;
 // detours are tried in steps of ~10 degrees up to ~70 degrees to either side
 static constexpr float DETOUR_STEP = 0.17f;
 static constexpr int DETOUR_STEPS = 7;
+// a planned route is followed by steering toward the point this far along it
+static constexpr float PATH_LOOKAHEAD = 0.8f;
 
 static constexpr float MIN_CONFIDENCE = 0.15f;
 // lost person: their last position and walking velocity predict where they went
@@ -107,10 +109,34 @@ void FollowPerson::runWithMultipose() {
 
         updateStairMode(stairSamples, levelHeight);
 
+        if (roboControl.exploreComboPressed()) {
+            exploring = !exploring;
+            if (exploring) {
+                explorer.reset();
+                std::cout << "[FollowPerson] exploring" << std::endl;
+            } else {
+                std::cout << "[FollowPerson] stopped exploring, following again" << std::endl;
+            }
+            // afterwards follow whoever shows up first
+            targetFound = false;
+        }
+
         // the remote controller always wins: don't send anything while it is used
         if (roboControl.controllerActive()) {
             roboControl.releaseControl();
             moving = false;
+            continue;
+        }
+
+        if (exploring) {
+            float x, z;
+            if (!explorer.step(x, z)) {
+                std::cout << "[FollowPerson] nothing left to explore, following again" << std::endl;
+                exploring = false;
+                stop();
+                continue;
+            }
+            drive(x, z);
             continue;
         }
 
@@ -208,7 +234,7 @@ void FollowPerson::runWithMultipose() {
         float heading = personAngle;
         if (x > 0) {
             float clearance = 0;
-            heading = planHeading(personAngle, std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD), clearance);
+            heading = planHeading(personAngle, distance, clearance);
             // slow down in front of obstacles and only turn if nothing is free
             x = std::min(x, std::max(0.0f, 0.5f * (clearance - MIN_CLEARANCE)));
         }
@@ -224,25 +250,29 @@ void FollowPerson::runWithMultipose() {
             z = lostSide * SEARCH_TURN_SPEED;
         }
 
-        if (stairMode) {
-            if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
-                if (moving) std::cerr << "[FollowPerson] tilted sideways on stairs, stopping" << std::endl;
-                stop();
-                continue;
-            }
+        drive(x, z);
+    }
+}
 
-            // a nose-down body means the robot is going down the stairs
-            const float maxSpeed = roboControl.pitch() > 0 ? STAIR_MAX_SPEED_DOWN : STAIR_MAX_SPEED_UP;
-            x = std::clamp(x, 0.0f, maxSpeed);
-            z = std::clamp(z, -STAIR_MAX_YAW, +STAIR_MAX_YAW);
-        }
-
-        if (x != 0 || z != 0) {
-            roboControl.moveRelative(x, z);
-            moving = true;
-        } else {
+void FollowPerson::drive(float x, float z) {
+    if (stairMode) {
+        if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
+            if (moving) std::cerr << "[FollowPerson] tilted sideways on stairs, stopping" << std::endl;
             stop();
+            return;
         }
+
+        // a nose-down body means the robot is going down the stairs
+        const float maxSpeed = roboControl.pitch() > 0 ? STAIR_MAX_SPEED_DOWN : STAIR_MAX_SPEED_UP;
+        x = std::clamp(x, 0.0f, maxSpeed);
+        z = std::clamp(z, -STAIR_MAX_YAW, +STAIR_MAX_YAW);
+    }
+
+    if (x != 0 || z != 0) {
+        roboControl.moveRelative(x, z);
+        moving = true;
+    } else {
+        stop();
     }
 }
 
@@ -300,7 +330,8 @@ void FollowPerson::updatePersonTrack(float x, float y, bool continuous, std::chr
     lastSeen = now;
 }
 
-float FollowPerson::planHeading(float personAngle, float needed, float& clearance) {
+float FollowPerson::planHeading(float personAngle, float distance, float& clearance) {
+    const float needed = std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD);
     if (!obstacleMap.available() || needed <= 0) {
         clearance = PLAN_LOOKAHEAD;
         return personAngle;
@@ -309,6 +340,29 @@ float FollowPerson::planHeading(float personAngle, float needed, float& clearanc
     const float x = roboControl.positionX();
     const float y = roboControl.positionY();
     const float yaw = roboControl.yaw();
+
+    // route through everything seen in the last minutes, so the robot can use a way
+    // around that it saw earlier but that is out of the LiDAR's range now
+    const float targetX = x + distance * std::cos(yaw + personAngle);
+    const float targetY = y + distance * std::sin(yaw + personAngle);
+    std::vector<std::pair<float, float>> path;
+    if (obstacleMap.planPath(x, y, targetX, targetY, PERSON_MARGIN, path) && path.size() > 1) {
+        auto aim = path.back();
+        for (const auto& point : path) {
+            if (std::hypot(point.first - x, point.second - y) >= PATH_LOOKAHEAD) {
+                aim = point;
+                break;
+            }
+        }
+        const float heading = wrapAngle(std::atan2(aim.second - y, aim.first - x) - yaw);
+        const float aimDistance = std::hypot(aim.first - x, aim.second - y);
+        clearance = obstacleMap.freeDistance(x, y, yaw + heading, std::max(std::min(needed, aimDistance), MIN_CLEARANCE));
+        // the route already goes around everything, only nearby obstacles slow it down
+        if (clearance >= std::min(needed, aimDistance)) clearance = PLAN_LOOKAHEAD;
+        return heading;
+    }
+
+    // no route found (e.g. target outside the map): detour by looking straight ahead
 
     // try the direct heading first, then detours further and further to the side.
     // the side of the last detour is tried first so the robot doesn't zig-zag

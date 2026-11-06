@@ -22,6 +22,9 @@ class Control
     unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::WirelessController_> subController;
     // last time a stick was moved or a button pressed on the remote, in steady_clock ticks
     std::atomic<std::chrono::steady_clock::rep> lastControllerInput {0};
+    // explore combo: counts presses so none is missed between two trick loop runs
+    std::atomic<int> explorePresses {0};
+    bool exploreComboHeld = false;
     unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::SportModeState_> subState;
 
     // all movement goes through the obstacle avoidance service. SportClient::Move
@@ -66,6 +69,8 @@ public:
     // true while someone is using the remote controller; tricks must not send
     // movement commands then, or they overwrite the controller's input
     bool controllerActive() const;
+    // true once for every press of the explore button combo on the remote
+    bool exploreComboPressed();
 
 private:
 

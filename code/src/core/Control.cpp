@@ -10,6 +10,13 @@ static constexpr float STICK_DEADZONE = 0.1f;
 // how long the controller keeps priority after its last input
 static constexpr auto CONTROLLER_HOLD_TIME = std::chrono::milliseconds(1500);
 
+// button bits of WirelessController_::keys(), see unitree_joystick.hpp
+static constexpr uint16_t KEY_R1 = 1 << 0;
+static constexpr uint16_t KEY_L1 = 1 << 1;
+static constexpr uint16_t KEY_Y = 1 << 11;
+// toggles exploring; must not be a combo the Go2 firmware already uses
+static constexpr uint16_t EXPLORE_COMBO = KEY_L1 | KEY_R1 | KEY_Y;
+
 static const std::vector<std::string> FSM_STATE_STR = {
     "PASSIVE",
     "STAND_DOWN",
@@ -71,12 +78,26 @@ namespace robo::sdk::core
                                  std::abs(input.rx()) > STICK_DEADZONE || std::abs(input.ry()) > STICK_DEADZONE;
         if (sticksMoved || input.keys() != 0)
             lastControllerInput = std::chrono::steady_clock::now().time_since_epoch().count();
+
+        // count a press only when the combo is newly complete, not while it's held
+        const bool comboHeld = (input.keys() & EXPLORE_COMBO) == EXPLORE_COMBO;
+        if (comboHeld && !exploreComboHeld) explorePresses++;
+        exploreComboHeld = comboHeld;
     }
 
     bool Control::controllerActive() const
     {
         const std::chrono::steady_clock::time_point last {std::chrono::steady_clock::duration(lastControllerInput.load())};
         return lastControllerInput.load() != 0 && std::chrono::steady_clock::now() - last < CONTROLLER_HOLD_TIME;
+    }
+
+    bool Control::exploreComboPressed()
+    {
+        int presses = explorePresses.load();
+        while (presses > 0) {
+            if (explorePresses.compare_exchange_weak(presses, presses - 1)) return true;
+        }
+        return false;
     }
 
     void Control::printStatus()
