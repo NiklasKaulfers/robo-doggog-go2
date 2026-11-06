@@ -87,26 +87,16 @@ void FollowPerson::runWithMultipose() {
         const float boxHeight = targetBox.ymax - targetBox.ymin;
         const float distance = TARGET_DISTANCE * BOX_HEIGHT_AT_0_5M / boxHeight;
 
-        float x = 0.0f;
-        if (distance > TARGET_DISTANCE) {
-            // too far away -> walk towards the person
-            x = std::min(0.6f, 0.5f * (distance - TARGET_DISTANCE));
-        } else if (distance < TARGET_DISTANCE) {
-            // too close -> walk away from the person
-            x = -std::min(0.6f, 0.5f * (TARGET_DISTANCE - distance));
-        }
+        // proportional control so the motion is smooth instead of walking straight and
+        // suddenly turning once the person leaves a band around the image center
+        // (x: move toward the person if too far, away if too close)
+        const float x = std::clamp(0.5f * (distance - TARGET_DISTANCE), -0.6f, +0.6f);
 
-        // keep the person centered in front of the robot
+        // z: rotate toward the person, proportional to how far off center they are.
+        // with this there is no "perfect center" needed for the rotation to start
         const float middle = targetBox.xmax - (targetBox.xmax - targetBox.xmin) / 2;
-        float z = 0.0f;
-        if (middle > 0.55f) {
-            z = -0.6f;
-        } else if (middle < 0.45f) {
-            z = +0.6f;
-        }
+        const float z = std::clamp(-2.0f * (middle - 0.5f), -0.6f, +0.6f);
 
-        // a single Move is used so that translation and rotation are applied at
-        // the same time (successive Move calls would override each other)
         if (x != 0 || z != 0)
             roboControl.moveRelative(x, z);
         else
