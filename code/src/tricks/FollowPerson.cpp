@@ -47,6 +47,40 @@ static constexpr float MIN_CLEARANCE = 0.35f;
 static constexpr float DETOUR_STEP = 0.17f;
 static constexpr int DETOUR_STEPS = 7;
 
+static constexpr float MIN_CONFIDENCE = 0.15f;
+// lost person: their last position and walking velocity predict where they went
+static constexpr float PREDICT_HORIZON = 2.0f;      // s, don't extrapolate further than this
+static constexpr float MAX_PERSON_SPEED = 1.5f;     // m/s, caps noisy velocity estimates
+static constexpr float VELOCITY_SMOOTHING = 0.3f;   // weight of a new velocity measurement
+// a detection this close (rad) to the predicted direction is taken as the lost person
+static constexpr float REACQUIRE_ANGLE = 0.4f;
+// once at the predicted spot, look around toward the side the person left
+static constexpr float SEARCH_ARRIVED = 0.6f;
+static constexpr float SEARCH_TURN_SPEED = 0.4f;
+// give up searching and wait for anyone to show up
+static constexpr float SEARCH_TIMEOUT = 10.0f;
+static constexpr int LOST_FRAMES = 3;
+
+static float wrapAngle(float a) {
+    return std::atan2(std::sin(a), std::cos(a));
+}
+
+static float boxCenterX(const movenet::Box& box) {
+    return box.xmax - (box.xmax - box.xmin) / 2;
+}
+
+// estimate the distance from the robot to the person: the apparent width of a
+// standing person scales roughly inversely with their distance to the camera,
+// which gives a much more sensitive measurement than the box height here
+static float boxDistance(const movenet::Box& box) {
+    return TARGET_DISTANCE * BOX_WIDTH_AT_0_5M / (box.xmax - box.xmin);
+}
+
+// direction of the person relative to the robot's heading, positive = left
+static float boxAngle(const movenet::Box& box) {
+    return -(boxCenterX(box) - 0.5f) * CAMERA_FOV;
+}
+
 FollowPerson::FollowPerson(core::Control& control) : roboControl(control) {
     videoClient.Init();
     obstacleMap.init();
@@ -86,58 +120,89 @@ void FollowPerson::runWithMultipose() {
             continue;
         }
 
-        // recognize the person: same logic as TurnToPerson, the detection with
-        // the highest confidence is used
-        movenet::Box mark {0, 0, 0, 0, 0};
-        int detectionIdx = 0;
+        const auto now = std::chrono::steady_clock::now();
+        const float rx = roboControl.positionX();
+        const float ry = roboControl.positionY();
+        const float yaw = roboControl.yaw();
+
+        // where the person should be by now, from their last position and velocity
+        const float sinceSeen = std::chrono::duration<float>(now - lastSeen).count();
+        const float t = std::min(sinceSeen, PREDICT_HORIZON);
+        const float predX = personX + personVX * t;
+        const float predY = personY + personVY * t;
+        const float predAngle = wrapAngle(std::atan2(predY - ry, predX - rx) - yaw);
+        const float predDistance = std::hypot(predX - rx, predY - ry);
+
+        // find our person among the detections:
+        //  - nobody followed yet: the detection with the highest confidence
+        //  - still in view: the one whose center stays close to the last box
+        //  - out of view: the one closest to the predicted direction
+        int match = -1;
+        float bestScore = 0;
         for (int d = 0; d < detector.modelDetectionCount(); d++) {
             const auto box = detector.getBox(d);
-            if (box.confidence > mark.confidence) {
-                mark = box;
-                detectionIdx = d;
+            if (box.confidence < MIN_CONFIDENCE) continue;
+
+            float score;
+            if (!targetFound) {
+                score = box.confidence;
+            } else if (countNotFound == 0) {
+                const float dx = boxCenterX(box) - boxCenterX(targetBox);
+                const float dy = (box.ymax - (box.ymax - box.ymin) / 2) - (targetBox.ymax - (targetBox.ymax - targetBox.ymin) / 2);
+                const float dist = std::sqrt(dx * dx + dy * dy);
+                if (dist >= PERSON_CENTER_TOLERANCE) continue;
+                score = PERSON_CENTER_TOLERANCE - dist;
+            } else {
+                const float diff = std::abs(wrapAngle(boxAngle(box) - predAngle));
+                if (diff >= REACQUIRE_ANGLE) continue;
+                score = REACQUIRE_ANGLE - diff;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                match = d;
             }
         }
 
-        // first person seen -> make it the target we follow
-        if (!targetFound) {
-            if (mark.confidence < 0.15f) continue;
-            targetFound = true;
-            targetBox = mark;
-            countNotFound = 0;
-            std::cout << "[FollowPerson] found person, following" << std::endl;
-        } else {
-            // keep tracking the same person: the center of a detection must stay
-            // close to the one we already follow
-            const float cx = mark.xmax - (mark.xmax - mark.xmin) / 2;
-            const float cy = mark.ymax - (mark.ymax - mark.ymin) / 2;
-            const float tx = targetBox.xmax - (targetBox.xmax - targetBox.xmin) / 2;
-            const float ty = targetBox.ymax - (targetBox.ymax - targetBox.ymin) / 2;
+        float distance, personAngle;
+        if (match >= 0) {
+            const auto box = detector.getBox(match);
+            if (!targetFound) std::cout << "[FollowPerson] found person, following" << std::endl;
+            else if (countNotFound >= LOST_FRAMES) std::cout << "[FollowPerson] found person again" << std::endl;
 
-            if ((mark.confidence >= 0.15f) &&
-                std::sqrt((cx - tx) * (cx - tx) + (cy - ty) * (cy - ty)) < PERSON_CENTER_TOLERANCE) {
-                targetBox = mark;
-                countNotFound = 0;
-            } else if (++countNotFound > 8) {
-                if (moving) std::cout << "[FollowPerson] target lost" << std::endl;
+            distance = boxDistance(box);
+            personAngle = boxAngle(box);
+            updatePersonTrack(rx + distance * std::cos(yaw + personAngle),
+                              ry + distance * std::sin(yaw + personAngle),
+                              targetFound && countNotFound == 0, now);
+            lostSide = personAngle > 0 ? 1 : -1;
+
+            targetFound = true;
+            targetBox = box;
+            countNotFound = 0;
+        } else {
+            if (!targetFound) continue;
+
+            if (++countNotFound == LOST_FRAMES)
+                std::cout << "[FollowPerson] person out of view, searching" << std::endl;
+
+            if (sinceSeen > SEARCH_TIMEOUT) {
+                std::cout << "[FollowPerson] gave up searching" << std::endl;
+                targetFound = false;
                 stop();
                 continue;
             }
-        }
 
-        // estimate the distance from the robot to the person: the apparent width of a
-        // standing person scales roughly inversely with their distance to the camera,
-        // which gives a much more sensitive measurement than the box height here
-        const float boxWidth = targetBox.xmax - targetBox.xmin;
-        const float distance = TARGET_DISTANCE * BOX_WIDTH_AT_0_5M / boxWidth;
+            // head for the predicted position; it's outside the camera view, so turning
+            // toward it means looking in the direction the person left
+            distance = predDistance;
+            personAngle = predAngle;
+            if (std::abs(predAngle) > 0.1f) lostSide = predAngle > 0 ? 1 : -1;
+        }
 
         // proportional control so the motion is smooth instead of walking straight and
         // suddenly turning once the person leaves a band around the image center
         // (x: move toward the person if too far, away if too close)
         float x = std::clamp(0.5f * (distance - TARGET_DISTANCE), -0.6f, +0.6f);
-
-        // direction of the person relative to the robot's heading
-        const float middle = targetBox.xmax - (targetBox.xmax - targetBox.xmin) / 2;
-        const float personAngle = -(middle - 0.5f) * CAMERA_FOV;
 
         // when walking toward the person, take a detour around obstacles in the way
         float heading = personAngle;
@@ -151,6 +216,13 @@ void FollowPerson::runWithMultipose() {
         // z: rotate toward the chosen heading, proportional to how far off it is.
         // with this there is no "perfect center" needed for the rotation to start
         float z = std::clamp(TURN_GAIN * heading, -0.6f, +0.6f);
+
+        // arrived where the person should be but still can't see them: look around,
+        // starting with the side they disappeared to
+        if (match < 0 && predDistance < SEARCH_ARRIVED) {
+            x = 0;
+            z = lostSide * SEARCH_TURN_SPEED;
+        }
 
         if (stairMode) {
             if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
@@ -207,6 +279,25 @@ void FollowPerson::stop() {
     if (!moving) return;
     roboControl.stopMovement();
     moving = false;
+}
+
+void FollowPerson::updatePersonTrack(float x, float y, bool continuous, std::chrono::steady_clock::time_point now) {
+    const float dt = std::chrono::duration<float>(now - lastSeen).count();
+    if (continuous && dt > 0) {
+        // smoothed, because the distance estimate from the box width is noisy
+        personVX += VELOCITY_SMOOTHING * ((x - personX) / dt - personVX);
+        personVY += VELOCITY_SMOOTHING * ((y - personY) / dt - personVY);
+        const float speed = std::hypot(personVX, personVY);
+        if (speed > MAX_PERSON_SPEED) {
+            personVX *= MAX_PERSON_SPEED / speed;
+            personVY *= MAX_PERSON_SPEED / speed;
+        }
+    } else {
+        personVX = personVY = 0;
+    }
+    personX = x;
+    personY = y;
+    lastSeen = now;
 }
 
 float FollowPerson::planHeading(float personAngle, float needed, float& clearance) {
