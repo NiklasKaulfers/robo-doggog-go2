@@ -9,13 +9,13 @@
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
 
-// The height of a standing person in normalized image coordinates (0..1) when
-// they stand approximately 0.5m away from the Go2's front camera. Movenet's
-// boxes scale roughly inversely with the distance to the camera, so comparing
-// the detected box height against this value gives an estimate of the current
-// distance between the robot and the person. This constant can be tuned for
-// a specific installation (camera position / person height).
-static constexpr float BOX_HEIGHT_AT_0_5M = 0.75f;
+// The width of a standing person in normalized image coordinates (0..1) when they
+// stand approximately 0.5m away from the Go2's front camera. Movenet's boxes scale
+// roughly inversely with the distance to the camera, so comparing the detected box
+// width against this value gives an estimate of the current distance between the
+// robot and the person. It is calibrated for a ~0.4m wide person (shoulders) in front
+// of the Go2's 120° FOV camera and can be tuned per installation.
+static constexpr float BOX_WIDTH_AT_0_5M = 0.35f;
 static constexpr float TARGET_DISTANCE = 0.5f;
 static constexpr float PERSON_CENTER_TOLERANCE = 0.15f;
 
@@ -83,9 +83,11 @@ void FollowPerson::runWithMultipose() {
             }
         }
 
-        // keep the distance to the person around TARGET_DISTANCE (0.5m)
-        const float boxHeight = targetBox.ymax - targetBox.ymin;
-        const float distance = TARGET_DISTANCE * BOX_HEIGHT_AT_0_5M / boxHeight;
+        // estimate the distance from the robot to the person: the apparent width of a
+        // standing person scales roughly inversely with their distance to the camera,
+        // which gives a much more sensitive measurement than the box height here
+        const float boxWidth = targetBox.xmax - targetBox.xmin;
+        const float distance = TARGET_DISTANCE * BOX_WIDTH_AT_0_5M / boxWidth;
 
         // proportional control so the motion is smooth instead of walking straight and
         // suddenly turning once the person leaves a band around the image center
