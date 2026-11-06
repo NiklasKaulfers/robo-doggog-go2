@@ -27,6 +27,7 @@ public:
     void rotateRight(float speed);
     void moveForwardBackward(float speed);
     void moveRightLeft(float speed);
+    void moveRelative(float x, float z);
 
 private:
 

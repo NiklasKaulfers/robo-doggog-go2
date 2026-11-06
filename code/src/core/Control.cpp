@@ -88,4 +88,10 @@ namespace robo::sdk::core
     {
         client.Move(0.0, speed, 0.0);
     }
+
+    void Control::moveRelative(float x, float z)
+    {
+        // one command so that translation and rotation are applied at the same time
+        client.Move(x, 0.0f, z);
+    }
 }

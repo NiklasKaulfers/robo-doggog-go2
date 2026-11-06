@@ -3,6 +3,7 @@
 #include "core/Control.h"
 #include "tricks/TurnToPerson.h"
 #include "tricks/SitStandApproach.h"
+#include "tricks/FollowPerson.h"
 
 using namespace robo::sdk;
 using namespace robo::sdk::core;
@@ -23,7 +24,7 @@ int main(int argc, char** argv)
     }
     control.printStatus();
 
-    examples::TurnToPerson trick(control);
+    examples::FollowPerson trick(control);
     trick.run();
 
     //examples::SitStandApproach trick(control);

@@ -34,5 +34,7 @@ add_executable( app
         src/tricks/TurnToPerson.h
         src/tricks/SitStandApproach.cpp
         src/tricks/SitStandApproach.h
+        src/tricks/FollowPerson.cpp
+        src/tricks/FollowPerson.h
 )
 target_link_libraries(app unitree_sdk2 litert_cc_api ${OpenCV_LIBS})
