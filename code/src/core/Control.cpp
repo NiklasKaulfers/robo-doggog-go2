@@ -33,11 +33,13 @@ namespace robo::sdk::core
 
     void Control::updateState(const void* message)
     {
+        std::lock_guard<std::mutex> lock(stateMutex);
         state = *static_cast<const unitree_go::msg::dds_::SportModeState_*>(message);
     }
 
     void Control::printStatus()
     {
+        std::lock_guard<std::mutex> lock(stateMutex);
         std::cout << "Control status:" << std::endl;
         std::cout << "  position: " << state.position()[0] << ", " << state.position()[1] << ", " << state.position()[2] << std::endl;
         std::cout << "  temperature: " << static_cast<uint32_t>(state.imu_state().temperature()) << std::endl;
@@ -93,5 +95,40 @@ namespace robo::sdk::core
     {
         // one command so that translation and rotation are applied at the same time
         client.Move(x, 0.0f, z);
+    }
+
+    float Control::pitch() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.imu_state().rpy()[1];
+    }
+
+    float Control::roll() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.imu_state().rpy()[0];
+    }
+
+    float Control::positionZ() const
+    {
+        std::lock_guard<std::mutex> lock(stateMutex);
+        return state.position()[2];
+    }
+
+    bool Control::setStairMode(bool enabled)
+    {
+        if (enabled == stairMode) return true;
+
+        // FreeWalk is the Go2's perceptive gait that handles steps on its own, the
+        // slowest speed level gives the feet enough time to find each step
+        bool ret = true;
+        if (enabled) {
+            ret &= client.FreeWalk() == 0;
+            ret &= client.SpeedLevel(-1) == 0;
+        } else {
+            ret &= client.SpeedLevel(0) == 0;
+        }
+        stairMode = enabled;
+        return ret;
     }
 }

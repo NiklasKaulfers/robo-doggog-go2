@@ -22,6 +22,8 @@ public:
 private:
 
     void runWithMultipose();
+    // switches the robot into/out of stair mode based on body tilt and height change
+    void updateStairMode(int& stairSamples, float& levelHeight);
 };
 }
 
