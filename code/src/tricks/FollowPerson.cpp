@@ -59,6 +59,12 @@ void FollowPerson::runWithMultipose() {
 
         updateStairMode(stairSamples, levelHeight);
 
+        // the remote controller always wins: don't send anything while it is used
+        if (roboControl.controllerActive()) {
+            moving = false;
+            continue;
+        }
+
         videoClient.GetImageSample(imgData);
         if (!detector.run(imgData)) {
             std::cerr << "[FollowPerson] error in detector.run()" << std::endl;
@@ -97,8 +103,8 @@ void FollowPerson::runWithMultipose() {
                 targetBox = mark;
                 countNotFound = 0;
             } else if (++countNotFound > 8) {
-                std::cout << "[FollowPerson] target lost" << std::endl;
-                roboControl.stopMovement();
+                if (moving) std::cout << "[FollowPerson] target lost" << std::endl;
+                stop();
                 continue;
             }
         }
@@ -119,10 +125,10 @@ void FollowPerson::runWithMultipose() {
         const float middle = targetBox.xmax - (targetBox.xmax - targetBox.xmin) / 2;
         float z = std::clamp(-2.0f * (middle - 0.5f), -0.6f, +0.6f);
 
-        if (roboControl.isStairMode()) {
+        if (stairMode) {
             if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
-                std::cerr << "[FollowPerson] tilted sideways on stairs, stopping" << std::endl;
-                roboControl.stopMovement();
+                if (moving) std::cerr << "[FollowPerson] tilted sideways on stairs, stopping" << std::endl;
+                stop();
                 continue;
             }
 
@@ -132,10 +138,12 @@ void FollowPerson::runWithMultipose() {
             z = std::clamp(z, -STAIR_MAX_YAW, +STAIR_MAX_YAW);
         }
 
-        if (x != 0 || z != 0)
+        if (x != 0 || z != 0) {
             roboControl.moveRelative(x, z);
-        else
-            roboControl.stopMovement();
+            moving = true;
+        } else {
+            stop();
+        }
     }
 }
 
@@ -143,15 +151,14 @@ void FollowPerson::updateStairMode(int& stairSamples, float& levelHeight) {
     const float pitch = std::abs(roboControl.pitch());
     const float height = roboControl.positionZ();
 
-    if (!roboControl.isStairMode()) {
+    if (!stairMode) {
         const bool tilted = pitch > STAIR_PITCH_ENTER;
         const bool heightChanged = std::abs(height - levelHeight) > STAIR_HEIGHT_CHANGE;
         stairSamples = (tilted || heightChanged) ? stairSamples + 1 : 0;
 
         if (stairSamples >= STAIR_ENTER_SAMPLES) {
-            std::cout << "[FollowPerson] stairs detected, switching to stair mode" << std::endl;
-            if (!roboControl.setStairMode(true))
-                std::cerr << "[FollowPerson] error switching to stair mode" << std::endl;
+            std::cout << "[FollowPerson] stairs detected, moving carefully" << std::endl;
+            stairMode = true;
             stairSamples = 0;
         } else if (stairSamples == 0) {
             levelHeight = height;
@@ -161,10 +168,16 @@ void FollowPerson::updateStairMode(int& stairSamples, float& levelHeight) {
 
         if (stairSamples >= STAIR_EXIT_SAMPLES) {
             std::cout << "[FollowPerson] back on level ground" << std::endl;
-            if (!roboControl.setStairMode(false))
-                std::cerr << "[FollowPerson] error leaving stair mode" << std::endl;
+            stairMode = false;
             stairSamples = 0;
             levelHeight = height;
         }
     }
+}
+
+void FollowPerson::stop() {
+    // only send the stop once, repeating it would block the remote controller
+    if (!moving) return;
+    roboControl.stopMovement();
+    moving = false;
 }

@@ -1,6 +1,14 @@
 #include "Control.h"
 
+#include <cmath>
+
 #define TOPIC_HIGHSTATE "rt/sportmodestate"
+#define TOPIC_CONTROLLER "rt/wirelesscontroller"
+
+// stick deflection below this is treated as noise
+static constexpr float STICK_DEADZONE = 0.1f;
+// how long the controller keeps priority after its last input
+static constexpr auto CONTROLLER_HOLD_TIME = std::chrono::milliseconds(1500);
 
 static const std::vector<std::string> FSM_STATE_STR = {
     "PASSIVE",
@@ -29,12 +37,30 @@ namespace robo::sdk::core
 
         subState.reset(new unitree::robot::ChannelSubscriber<unitree_go::msg::dds_::SportModeState_>(TOPIC_HIGHSTATE));
         subState->InitChannel(std::bind(&Control::updateState, this, std::placeholders::_1), 1);
+
+        subController.reset(new unitree::robot::ChannelSubscriber<unitree_go::msg::dds_::WirelessController_>(TOPIC_CONTROLLER));
+        subController->InitChannel(std::bind(&Control::updateController, this, std::placeholders::_1), 1);
     }
 
     void Control::updateState(const void* message)
     {
         std::lock_guard<std::mutex> lock(stateMutex);
         state = *static_cast<const unitree_go::msg::dds_::SportModeState_*>(message);
+    }
+
+    void Control::updateController(const void* message)
+    {
+        const auto& input = *static_cast<const unitree_go::msg::dds_::WirelessController_*>(message);
+        const bool sticksMoved = std::abs(input.lx()) > STICK_DEADZONE || std::abs(input.ly()) > STICK_DEADZONE ||
+                                 std::abs(input.rx()) > STICK_DEADZONE || std::abs(input.ry()) > STICK_DEADZONE;
+        if (sticksMoved || input.keys() != 0)
+            lastControllerInput = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+
+    bool Control::controllerActive() const
+    {
+        const std::chrono::steady_clock::time_point last {std::chrono::steady_clock::duration(lastControllerInput.load())};
+        return lastControllerInput.load() != 0 && std::chrono::steady_clock::now() - last < CONTROLLER_HOLD_TIME;
     }
 
     void Control::printStatus()
@@ -113,22 +139,5 @@ namespace robo::sdk::core
     {
         std::lock_guard<std::mutex> lock(stateMutex);
         return state.position()[2];
-    }
-
-    bool Control::setStairMode(bool enabled)
-    {
-        if (enabled == stairMode) return true;
-
-        // FreeWalk is the Go2's perceptive gait that handles steps on its own, the
-        // slowest speed level gives the feet enough time to find each step
-        bool ret = true;
-        if (enabled) {
-            ret &= client.FreeWalk() == 0;
-            ret &= client.SpeedLevel(-1) == 0;
-        } else {
-            ret &= client.SpeedLevel(0) == 0;
-        }
-        stairMode = enabled;
-        return ret;
     }
 }

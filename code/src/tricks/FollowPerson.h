@@ -12,6 +12,10 @@ class FollowPerson {
     core::Control& roboControl;
     unitree::robot::go2::VideoClient videoClient;
     std::vector<uint8_t> imgData;
+    // whether we sent a movement command since the last stop
+    bool moving = false;
+    // on stairs only slow, straight, forward movement is sent
+    bool stairMode = false;
 
 public:
 
@@ -22,7 +26,8 @@ public:
 private:
 
     void runWithMultipose();
-    // switches the robot into/out of stair mode based on body tilt and height change
+    void stop();
+    // detects stairs from body tilt and height change, the gait itself is left to the robot
     void updateStairMode(int& stairSamples, float& levelHeight);
 };
 }
