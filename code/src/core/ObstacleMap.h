@@ -46,12 +46,17 @@ public:
     bool planPath(float fromX, float fromY, float toX, float toY, float goalRadius,
                   std::vector<std::pair<float, float>>& path) const;
 
-    // nearest reachable spot at the edge of the known map (known walkable terrain next
-    // to unseen terrain), at least minDistance away and not within ignoreRadius of any
-    // point in ignore. false if there is none left.
-    bool findFrontier(float fromX, float fromY, float minDistance,
-                      const std::vector<std::pair<float, float>>& ignore, float ignoreRadius,
-                      float& outX, float& outY) const;
+    struct Spot
+    {
+        float x, y;
+        // at the edge of the known map, next to unseen terrain
+        bool frontier;
+    };
+
+    // known, walkable spots that can be reached from (fromX, fromY) without crossing an
+    // obstacle, between minDistance and maxDistance away, about every 0.5m
+    void reachableSpots(float fromX, float fromY, float minDistance, float maxDistance,
+                        std::vector<Spot>& spots) const;
 
 private:
 

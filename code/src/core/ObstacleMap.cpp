@@ -277,15 +277,15 @@ namespace robo::sdk::core
         return true;
     }
 
-    bool ObstacleMap::findFrontier(float fromX, float fromY, float minDistance,
-                                   const std::vector<std::pair<float, float>>& ignore, float ignoreRadius,
-                                   float& outX, float& outY) const
+    void ObstacleMap::reachableSpots(float fromX, float fromY, float minDistance, float maxDistance,
+                                     std::vector<Spot>& spots) const
     {
+        spots.clear();
         std::lock_guard<std::mutex> lock(mapMutex);
-        if (!hasMap) return false;
+        if (!hasMap) return;
 
         int sx, sy;
-        if (!cellIndex(fromX, fromY, sx, sy)) return false;
+        if (!cellIndex(fromX, fromY, sx, sy)) return;
 
         std::vector<float> cost;
         buildCostGrid(cost);
@@ -294,7 +294,7 @@ namespace robo::sdk::core
             return ix >= 0 && iy >= 0 && ix < SIZE && iy < SIZE && cost[iy * SIZE + ix] == UNKNOWN_COST;
         };
 
-        // breadth-first search through known, walkable terrain finds the nearest frontier
+        // breadth-first search through known, walkable terrain
         std::vector<bool> visited(SIZE * SIZE, false);
         std::queue<int> open;
         open.push(sy * SIZE + sx);
@@ -306,29 +306,26 @@ namespace robo::sdk::core
             const int ix = idx % SIZE, iy = idx / SIZE;
             const float wx = originX + (ix + 0.5f) * RESOLUTION;
             const float wy = originY + (iy + 0.5f) * RESOLUTION;
+            const float distance = std::hypot(wx - fromX, wy - fromY);
 
-            const bool frontier = unknown(ix + 1, iy) || unknown(ix - 1, iy) || unknown(ix, iy + 1) || unknown(ix, iy - 1);
-            if (frontier && std::hypot(wx - fromX, wy - fromY) >= minDistance) {
-                const bool ignored = std::any_of(ignore.begin(), ignore.end(), [&](const auto& p) {
-                    return std::hypot(p.first - wx, p.second - wy) < ignoreRadius;
-                });
-                if (!ignored) {
-                    outX = wx;
-                    outY = wy;
-                    return true;
-                }
+            // keep every 5th cell in each direction, enough choice without huge lists
+            if (distance >= minDistance && ix % 5 == 0 && iy % 5 == 0) {
+                const bool frontier = unknown(ix + 1, iy) || unknown(ix - 1, iy) || unknown(ix, iy + 1) || unknown(ix, iy - 1);
+                spots.push_back(Spot {wx, wy, frontier});
             }
 
             for (const auto& [nx, ny] : {std::pair {ix + 1, iy}, std::pair {ix - 1, iy},
                                          std::pair {ix, iy + 1}, std::pair {ix, iy - 1}}) {
                 if (nx < 0 || ny < 0 || nx >= SIZE || ny >= SIZE) continue;
                 const int n = ny * SIZE + nx;
-                // only walk through known terrain that isn't blocked by a recent obstacle
-                if (visited[n] || std::isinf(cost[n]) || cost[n] == UNKNOWN_COST) continue;
+                // only known terrain that isn't blocked by a recent obstacle (old obstacles
+                // count as blocked too, goals shouldn't be behind them)
+                if (visited[n] || cost[n] != 1.0f) continue;
+                if (std::hypot(originX + (nx + 0.5f) * RESOLUTION - fromX, originY + (ny + 0.5f) * RESOLUTION - fromY) > maxDistance)
+                    continue;
                 visited[n] = true;
                 open.push(n);
             }
         }
-        return false;
     }
 }

@@ -128,14 +128,10 @@ void FollowPerson::runWithMultipose() {
             continue;
         }
 
+        // roams until the explore combo is pressed again
         if (exploring) {
             float x, z;
-            if (!explorer.step(x, z)) {
-                std::cout << "[FollowPerson] nothing left to explore, following again" << std::endl;
-                exploring = false;
-                stop();
-                continue;
-            }
+            explorer.step(x, z);
             drive(x, z);
             continue;
         }
