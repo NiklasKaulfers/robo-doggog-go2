@@ -59,9 +59,18 @@ static constexpr float REACQUIRE_ANGLE = 0.4f;
 // once at the predicted spot, look around toward the side the person left
 static constexpr float SEARCH_ARRIVED = 0.6f;
 static constexpr float SEARCH_TURN_SPEED = 0.4f;
-// give up searching and wait for anyone to show up
+// after this the robot roams around semi-randomly until the person shows up again
 static constexpr float SEARCH_TIMEOUT = 10.0f;
 static constexpr int LOST_FRAMES = 3;
+// following a specific person: their face confirms them, after that their clothes (as
+// learned from the camera) recognize them from behind. How much the clothes must look
+// alike to find them again, and how little while following them before it is taken as
+// someone else stepping in front. Tune with the logged values.
+static constexpr float CLOTHING_SIMILARITY = 0.7f;
+static constexpr float TRACK_MIN_SIMILARITY = 0.5f;
+// faces are checked every frame while looking for the person, while following them
+// only every few frames as the face detection is expensive
+static constexpr int FACE_CHECK_INTERVAL = 3;
 
 static float wrapAngle(float a) {
     return std::atan2(std::sin(a), std::cos(a));
@@ -83,7 +92,8 @@ static float boxAngle(const movenet::Box& box) {
     return -(boxCenterX(box) - 0.5f) * CAMERA_FOV;
 }
 
-FollowPerson::FollowPerson(core::Control& control) : roboControl(control) {
+FollowPerson::FollowPerson(core::Control& control, std::string targetImages)
+    : roboControl(control), targetImages(std::move(targetImages)) {
     videoClient.Init();
     obstacleMap.init();
 }
@@ -96,10 +106,20 @@ void FollowPerson::runWithMultipose() {
     movenet::Multipose detector;
     if (!detector.init()) return;
 
+    if (!targetImages.empty()) {
+        if (!identifier.load(targetImages)) {
+            std::cerr << "[FollowPerson] no face found in the images in " << targetImages << std::endl;
+            return;
+        }
+        identify = true;
+        std::cout << "[FollowPerson] waiting to see the face of the person from the images" << std::endl;
+    }
+
     // the first person we saw, which is tracked until it is lost
     bool targetFound = false;
     movenet::Box targetBox {0, 0, 0, 0, 0};
     int countNotFound = 0;
+    int frameCount = 0;
 
     int stairSamples = 0;
     float levelHeight = roboControl.positionZ();
@@ -117,8 +137,9 @@ void FollowPerson::runWithMultipose() {
             } else {
                 std::cout << "[FollowPerson] stopped exploring, following again" << std::endl;
             }
-            // afterwards follow whoever shows up first
+            // afterwards follow whoever (or the identified person) shows up first
             targetFound = false;
+            roamSearching = false;
         }
 
         // the remote controller always wins: don't send anything while it is used
@@ -155,20 +176,57 @@ void FollowPerson::runWithMultipose() {
         const float predAngle = wrapAngle(std::atan2(predY - ry, predX - rx) - yaw);
         const float predDistance = std::hypot(predX - rx, predY - ry);
 
+        const bool tracking = targetFound && countNotFound == 0 && !roamSearching;
+        if (identify) {
+            if (!tracking || ++frameCount % FACE_CHECK_INTERVAL == 0) identifier.detectFaces(detector);
+            else identifier.clearFaces();
+        }
+
         // find our person among the detections:
         //  - nobody followed yet: the detection with the highest confidence
         //  - still in view: the one whose center stays close to the last box
         //  - out of view: the one closest to the predicted direction
+        // with reference images:
+        //  - nobody followed yet: only someone whose face matches
+        //  - a matching face always wins, wherever it is; a face that clearly doesn't
+        //    match is never taken
+        //  - out of view: found again by face, or from behind by the clothes learned
+        //    while their face was visible
         int match = -1;
         float bestScore = 0;
+        PersonIdentifier::Face matchFace = PersonIdentifier::Face::Unknown;
+        float matchSimilarity = -1;
         for (int d = 0; d < detector.modelDetectionCount(); d++) {
             const auto box = detector.getBox(d);
             if (box.confidence < MIN_CONFIDENCE) continue;
 
+            float faceSimilarity = -1;
+            const auto face = identify ? identifier.face(detector, d, &faceSimilarity) : PersonIdentifier::Face::Unknown;
+            const float clothes = identify ? identifier.clothing(detector, d) : -1;
+            if (face == PersonIdentifier::Face::Mismatch) continue;
+
             float score;
-            if (!targetFound) {
+            float similarity = -1;
+            if (face == PersonIdentifier::Face::Match) {
+                score = 2 + faceSimilarity;
+                similarity = faceSimilarity;
+            } else if (identify && !tracking) {
+                if (!targetFound || clothes < CLOTHING_SIMILARITY) {
+                    // shortly lost and too little visible to tell: fall back to the direction
+                    if (!targetFound || roamSearching || clothes >= 0) continue;
+                    const float diff = std::abs(wrapAngle(boxAngle(box) - predAngle));
+                    if (diff >= REACQUIRE_ANGLE) continue;
+                    score = REACQUIRE_ANGLE - diff;
+                } else {
+                    score = 1 + clothes;
+                    similarity = clothes;
+                }
+            } else if (!targetFound || roamSearching) {
+                // while roaming the prediction is outdated, whoever shows up is followed
                 score = box.confidence;
             } else if (countNotFound == 0) {
+                // too little visible to tell (-1) is fine, clearly different clothes are not
+                if (identify && clothes >= 0 && clothes < TRACK_MIN_SIMILARITY) continue;
                 const float dx = boxCenterX(box) - boxCenterX(targetBox);
                 const float dy = (box.ymax - (box.ymax - box.ymin) / 2) - (targetBox.ymax - (targetBox.ymax - targetBox.ymin) / 2);
                 const float dist = std::sqrt(dx * dx + dy * dy);
@@ -182,14 +240,24 @@ void FollowPerson::runWithMultipose() {
             if (score > bestScore) {
                 bestScore = score;
                 match = d;
+                matchFace = face;
+                matchSimilarity = similarity;
             }
         }
 
         float distance, personAngle;
         if (match >= 0) {
             const auto box = detector.getBox(match);
-            if (!targetFound) std::cout << "[FollowPerson] found person, following" << std::endl;
-            else if (countNotFound >= LOST_FRAMES) std::cout << "[FollowPerson] found person again" << std::endl;
+            if (!targetFound || countNotFound >= LOST_FRAMES) {
+                std::cout << "[FollowPerson] " << (targetFound ? "found person again" : "found person, following");
+                if (identify && matchSimilarity >= 0)
+                    std::cout << " (" << (matchFace == PersonIdentifier::Face::Match ? "face" : "clothes")
+                              << " similarity " << matchSimilarity << ")";
+                std::cout << std::endl;
+            }
+            roamSearching = false;
+            // their face is visible: remember how their clothes look on this camera
+            if (matchFace == PersonIdentifier::Face::Match) identifier.learnClothing(detector, match);
 
             distance = boxDistance(box);
             personAngle = boxAngle(box);
@@ -207,10 +275,17 @@ void FollowPerson::runWithMultipose() {
             if (++countNotFound == LOST_FRAMES)
                 std::cout << "[FollowPerson] person out of view, searching" << std::endl;
 
+            // not where they were heading: walk around semi-randomly, the detector keeps
+            // running every step, so the person is followed again as soon as they show up
             if (sinceSeen > SEARCH_TIMEOUT) {
-                std::cout << "[FollowPerson] gave up searching" << std::endl;
-                targetFound = false;
-                stop();
+                if (!roamSearching) {
+                    std::cout << "[FollowPerson] person not found nearby, roaming around to find them" << std::endl;
+                    explorer.reset();
+                    roamSearching = true;
+                }
+                float x, z;
+                explorer.step(x, z);
+                drive(x, z);
                 continue;
             }
 

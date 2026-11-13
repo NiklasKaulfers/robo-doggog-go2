@@ -32,6 +32,8 @@ add_executable( app
         src/ml/movenet/Multipose.h
         src/ml/movenet/Singlepose.cpp
         src/ml/movenet/Singlepose.h
+        src/ml/PersonIdentifier.cpp
+        src/ml/PersonIdentifier.h
         src/tricks/TurnToPerson.cpp
         src/tricks/TurnToPerson.h
         src/tricks/SitStandApproach.cpp

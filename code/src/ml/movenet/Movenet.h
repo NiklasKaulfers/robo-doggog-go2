@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <litert/cc/litert_compiled_model.h>
+#include "opencv2/core.hpp"
 
 namespace robo::sdk::ml::movenet {
 
@@ -55,6 +56,14 @@ public:
 
     Keypoint getKeypoint(int detection, int idx) const;
 
+    // the last image given to the model (RGB, letterboxed to EXPECTED_IMG_SIZE square),
+    // keypoints and boxes are relative to this image
+    const cv::Mat& inputImage() const { return lastInput; }
+    // the last image as it was decoded (BGR, full resolution)
+    const cv::Mat& frame() const { return lastFrame; }
+    // maps a normalized position in the model input (x = column, y = row) to pixels in frame()
+    cv::Point2f toFrame(float x, float y) const;
+
 protected:
     static constexpr int EXPECTED_IMG_SIZE = 256;
 
@@ -62,6 +71,11 @@ protected:
 
 private:
     std::vector<uint8_t> inputDataBuf;
+    cv::Mat lastInput;
+    cv::Mat lastFrame;
+    // how lastFrame was scaled and padded into lastInput
+    float frameScale = 1;
+    int framePadLeft = 0, framePadTop = 0;
 };
 }
 

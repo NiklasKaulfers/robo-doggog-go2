@@ -8,6 +8,8 @@
 #include "vector"
 #include <chrono>
 #include "../ml/movenet/Multipose.h"
+#include "../ml/PersonIdentifier.h"
+#include <string>
 
 namespace robo::sdk::examples {
 class FollowPerson {
@@ -34,10 +36,18 @@ class FollowPerson {
     std::chrono::steady_clock::time_point lastSeen;
     // 1 = left, -1 = right; where to look first when the person is gone
     int lostSide = 1;
+    // roaming around to find the lost person after looking where they went didn't help
+    bool roamSearching = false;
+
+    // folder with images of the person to follow, empty = follow whoever shows up first
+    std::string targetImages;
+    ml::PersonIdentifier identifier;
+    bool identify = false;
 
 public:
 
-    explicit FollowPerson(core::Control& control);
+    // with targetImages only the person shown in the images in that folder is followed
+    explicit FollowPerson(core::Control& control, std::string targetImages = "");
 
     void run();
 

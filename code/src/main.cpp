@@ -1,5 +1,7 @@
 #include <csignal>
+#include <filesystem>
 #include <iostream>
+#include <string>
 
 #include "core/Control.h"
 #include "tricks/TurnToPerson.h"
@@ -29,7 +31,13 @@ int main(int argc, char** argv)
     }
     control.printStatus();
 
-    examples::FollowPerson trick(control);
+    // images of the person to follow: the folder given as argument, else ./res/target if
+    // it exists. Without any, the first person that shows up is followed
+    std::string targetImages = argc > 1 ? argv[1] : "";
+    if (targetImages.empty() && std::filesystem::is_directory("./res/target"))
+        targetImages = "./res/target";
+
+    examples::FollowPerson trick(control, targetImages);
     trick.run();
 
     //examples::SitStandApproach trick(control);
