@@ -1,8 +1,14 @@
 #include "Movenet.h"
 
+#include <cmath>
+
 #include "opencv2/opencv.hpp"
 
 using namespace robo::sdk::ml::movenet;
+
+cv::Point2f Movenet::toFrame(float x, float y) const {
+    return {(x * EXPECTED_IMG_SIZE - framePadLeft) / frameScale, (y * EXPECTED_IMG_SIZE - framePadTop) / frameScale};
+}
 
 Keypoint Movenet::getKeypoint(int detection, int idx) const {
     auto& data = getKeypointData();
@@ -18,16 +24,20 @@ bool Movenet::processInput(const std::vector<uint8_t> &data, litert::CompiledMod
     // data is a jpg image
     // https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_video_client.cpp
 
-    cv::Mat img = cv::imdecode(data, cv::ImreadModes::IMREAD_COLOR);
-    if (img.empty())
+    lastFrame = cv::imdecode(data, cv::ImreadModes::IMREAD_COLOR);
+    if (lastFrame.empty())
         return false;
 
-    int height = static_cast<int>(EXPECTED_IMG_SIZE / img.size().aspectRatio());
-    cv::Mat tmp;
-    cv::resize(img, tmp, cv::Size(EXPECTED_IMG_SIZE, height));
-    int padTop = (EXPECTED_IMG_SIZE - height) / 2;
-    int padBottom = padTop + (EXPECTED_IMG_SIZE - (height + 2 * padTop));
-    cv::copyMakeBorder(tmp, img, padTop, padBottom, 0, 0, cv::BORDER_CONSTANT);
+    // fit the image into the square and pad the rest, portrait images (e.g. uploaded
+    // photos) get padded left/right instead of top/bottom
+    frameScale = std::min(static_cast<float>(EXPECTED_IMG_SIZE) / lastFrame.cols, static_cast<float>(EXPECTED_IMG_SIZE) / lastFrame.rows);
+    const int width = std::min(EXPECTED_IMG_SIZE, static_cast<int>(std::lround(lastFrame.cols * frameScale)));
+    const int height = std::min(EXPECTED_IMG_SIZE, static_cast<int>(std::lround(lastFrame.rows * frameScale)));
+    cv::Mat img, tmp;
+    cv::resize(lastFrame, tmp, cv::Size(width, height));
+    framePadTop = (EXPECTED_IMG_SIZE - height) / 2;
+    framePadLeft = (EXPECTED_IMG_SIZE - width) / 2;
+    cv::copyMakeBorder(tmp, img, framePadTop, EXPECTED_IMG_SIZE - height - framePadTop, framePadLeft, EXPECTED_IMG_SIZE - width - framePadLeft, cv::BORDER_CONSTANT);
     if (tmp.type() != CV_8UC3) {
         img.convertTo(tmp, CV_8UC3);
         img = tmp;
@@ -36,6 +46,7 @@ bool Movenet::processInput(const std::vector<uint8_t> &data, litert::CompiledMod
     img = tmp;
     if (img.empty())
         return false;
+    lastInput = img;
     assert(img.rows == EXPECTED_IMG_SIZE);
     assert(img.cols == EXPECTED_IMG_SIZE);
 
