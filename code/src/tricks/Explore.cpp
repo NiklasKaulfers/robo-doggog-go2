@@ -33,6 +33,8 @@ static constexpr float MIN_CLEARANCE = 0.35f;
 static constexpr float LOOK_AROUND_SPEED = 0.3f;
 static constexpr auto LOOK_AROUND_TIME = std::chrono::milliseconds(2000);
 static constexpr auto LOG_INTERVAL = std::chrono::seconds(3);
+// a height map older than this (s) is not trusted, the robot stops instead
+static constexpr float MAP_STALE_SECONDS = 1.0f;
 
 static float wrapAngle(float a) {
     return std::atan2(std::sin(a), std::cos(a));
@@ -97,6 +99,15 @@ void Explore::step(float& x, float& z) {
         z = lookAroundDirection * LOOK_AROUND_SPEED;
         return;
     }
+    // the map was received but stopped updating: exploring relies on it entirely, so stand
+    // still (x = z = 0) until it comes back. INFINITY = never received, handled above
+    const float mapAge = obstacleMap.secondsSinceUpdate();
+    const bool stale = std::isfinite(mapAge) && mapAge > MAP_STALE_SECONDS;
+    if (stale != mapStale) {
+        mapStale = stale;
+        std::cout << (stale ? "[Explore] height map is stale, stopping" : "[Explore] height map is updating again") << std::endl;
+    }
+    if (stale) return;
     if (now < lookAroundUntil) {
         z = lookAroundDirection * LOOK_AROUND_SPEED;
         return;
@@ -157,7 +168,11 @@ void Explore::step(float& x, float& z) {
     }
     const float heading = wrapAngle(std::atan2(aim.second - ry, aim.first - rx) - yaw);
     const float aimDistance = std::hypot(aim.first - rx, aim.second - ry);
-    const float clearance = obstacleMap.freeDistance(rx, ry, yaw + heading, std::max(aimDistance, MIN_CLEARANCE));
+    // x moves the body along its current yaw, not along the route: the room straight
+    // ahead limits the speed as well as the room along the route
+    const float lookDistance = std::max(aimDistance, MIN_CLEARANCE);
+    const float clearance = std::min(obstacleMap.freeDistance(rx, ry, yaw + heading, lookDistance),
+                                     obstacleMap.freeDistance(rx, ry, yaw, lookDistance));
 
     // turn toward the route first, walk once roughly facing it; slow down in front of obstacles
     z = std::clamp(TURN_GAIN * heading, -0.6f, +0.6f);
