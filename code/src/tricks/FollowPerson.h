@@ -7,11 +7,16 @@
 #include "unitree/robot/go2/video/video_client.hpp"
 #include "vector"
 #include <chrono>
-#include "../ml/movenet/Multipose.h"
-#include "../ml/PersonIdentifier.h"
 #include <string>
+#include "../ml/movenet/Multipose.h"
+#include "../ml/PersonDetection.h"
+#include "../tracking/TargetTracker.h"
 
 namespace robo::sdk::examples {
+// Follows one person. Who that is and where they are is the TargetTracker's job (face
+// recognition against reference photos, clothes learned from the camera), this class
+// does the walking: keeping the distance, going around obstacles, finding them again
+// where they went, and being careful on stairs.
 class FollowPerson {
 
     core::Control& roboControl;
@@ -30,24 +35,22 @@ class FollowPerson {
     bool exploring = false;
     Explore explorer {roboControl, obstacleMap};
 
-    // last known position (odometry frame) and velocity of the person we follow
-    float personX = 0, personY = 0;
-    float personVX = 0, personVY = 0;
-    std::chrono::steady_clock::time_point lastSeen;
-    // 1 = left, -1 = right; where to look first when the person is gone
-    int lostSide = 1;
     // roaming around to find the lost person after looking where they went didn't help
     bool roamSearching = false;
 
-    // folder with images of the person to follow, empty = follow whoever shows up first
+    // folder with photos of the person to follow, empty = follow whoever shows up first
     std::string targetImages;
-    ml::PersonIdentifier identifier;
-    bool identify = false;
+    tracking::TargetTracker tracker;
+
+    // folder where annotated camera frames are written for debugging, empty = off
+    std::string debugDir;
+    std::chrono::steady_clock::time_point lastDebugFrame;
+    int debugFrameCount = 0;
 
 public:
 
-    // with targetImages only the person shown in the images in that folder is followed
-    explicit FollowPerson(core::Control& control, std::string targetImages = "");
+    // with targetImages only the person shown in the photos in that folder is followed
+    explicit FollowPerson(core::Control& control, std::string targetImages = "", std::string debugDir = "");
 
     void run();
 
@@ -57,8 +60,10 @@ private:
     void stop();
     // sends a movement, limited to what is safe on stairs
     void drive(float x, float z);
-    // remembers where the person is and how fast they walk, to predict them when lost
-    void updatePersonTrack(float x, float y, bool continuous, std::chrono::steady_clock::time_point now);
+    // everyone the pose detector found, in frame pixels
+    static void collectDetections(const ml::movenet::Multipose& detector, std::vector<ml::PersonDetection>& out);
+    // writes an annotated frame to debugDir now and then
+    void saveDebugFrame(const cv::Mat& frame, std::chrono::steady_clock::time_point now);
     // heading (relative to the robot) toward the person that avoids obstacles in the
     // remembered map; clearance is set to how far the robot can walk along it
     float planHeading(float personAngle, float distance, float& clearance);

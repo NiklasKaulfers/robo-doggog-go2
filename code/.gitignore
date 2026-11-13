@@ -1,3 +1,7 @@
 
-# photos of the person to follow
-code/res/target/
+# photos of the person to follow (relative to this folder)
+res/target/
+
+# build output and debug frames written by `app --debug`
+build/
+debug/

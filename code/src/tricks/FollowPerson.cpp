@@ -3,21 +3,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <thread>
+#include "opencv2/imgcodecs.hpp"
 #include "../ml/movenet/Multipose.h"
+#include "../tracking/CameraGeometry.h"
 
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
+using namespace robo::sdk::tracking;
 
-// The width of a standing person in normalized image coordinates (0..1) when they
-// stand approximately 0.5m away from the Go2's front camera. Movenet's boxes scale
-// roughly inversely with the distance to the camera, so comparing the detected box
-// width against this value gives an estimate of the current distance between the
-// robot and the person. It is calibrated for a ~0.4m wide person (shoulders) in front
-// of the Go2's 120° FOV camera and can be tuned per installation.
-static constexpr float BOX_WIDTH_AT_0_5M = 0.35f;
 static constexpr float TARGET_DISTANCE = 0.5f;
-static constexpr float PERSON_CENTER_TOLERANCE = 0.15f;
 
 // stairs are detected by the body tilting forward/backward. Entering and leaving use
 // different thresholds (hysteresis) so the robot doesn't toggle on every step edge.
@@ -34,8 +32,6 @@ static constexpr float STAIR_MAX_YAW = 0.2f;
 // tilted sideways this far means the robot is about to slip off a step
 static constexpr float STAIR_MAX_ROLL = 0.35f;      // ~20 degrees
 
-// horizontal field of view of the front camera, maps image position to an angle
-static constexpr float CAMERA_FOV = 2.09f;          // 120 degrees
 static constexpr float TURN_GAIN = 1.0f;
 // route planning: how far ahead the path to the person must be free
 static constexpr float PLAN_LOOKAHEAD = 1.5f;
@@ -49,51 +45,18 @@ static constexpr int DETOUR_STEPS = 7;
 // a planned route is followed by steering toward the point this far along it
 static constexpr float PATH_LOOKAHEAD = 0.8f;
 
+// pose detections below this confidence are ignored
 static constexpr float MIN_CONFIDENCE = 0.15f;
-// lost person: their last position and walking velocity predict where they went
-static constexpr float PREDICT_HORIZON = 2.0f;      // s, don't extrapolate further than this
-static constexpr float MAX_PERSON_SPEED = 1.5f;     // m/s, caps noisy velocity estimates
-static constexpr float VELOCITY_SMOOTHING = 0.3f;   // weight of a new velocity measurement
-// a detection this close (rad) to the predicted direction is taken as the lost person
-static constexpr float REACQUIRE_ANGLE = 0.4f;
 // once at the predicted spot, look around toward the side the person left
 static constexpr float SEARCH_ARRIVED = 0.6f;
 static constexpr float SEARCH_TURN_SPEED = 0.4f;
 // after this the robot roams around semi-randomly until the person shows up again
 static constexpr float SEARCH_TIMEOUT = 10.0f;
-static constexpr int LOST_FRAMES = 3;
-// following a specific person: their face confirms them, after that their clothes (as
-// learned from the camera) recognize them from behind. How much the clothes must look
-// alike to find them again, and how little while following them before it is taken as
-// someone else stepping in front. Tune with the logged values.
-static constexpr float CLOTHING_SIMILARITY = 0.7f;
-static constexpr float TRACK_MIN_SIMILARITY = 0.5f;
-// faces are checked every frame while looking for the person, while following them
-// only every few frames as the face detection is expensive
-static constexpr int FACE_CHECK_INTERVAL = 3;
+// how often a debug frame is written
+static constexpr auto DEBUG_FRAME_INTERVAL = std::chrono::milliseconds(1000);
 
-static float wrapAngle(float a) {
-    return std::atan2(std::sin(a), std::cos(a));
-}
-
-static float boxCenterX(const movenet::Box& box) {
-    return box.xmax - (box.xmax - box.xmin) / 2;
-}
-
-// estimate the distance from the robot to the person: the apparent width of a
-// standing person scales roughly inversely with their distance to the camera,
-// which gives a much more sensitive measurement than the box height here
-static float boxDistance(const movenet::Box& box) {
-    return TARGET_DISTANCE * BOX_WIDTH_AT_0_5M / (box.xmax - box.xmin);
-}
-
-// direction of the person relative to the robot's heading, positive = left
-static float boxAngle(const movenet::Box& box) {
-    return -(boxCenterX(box) - 0.5f) * CAMERA_FOV;
-}
-
-FollowPerson::FollowPerson(core::Control& control, std::string targetImages)
-    : roboControl(control), targetImages(std::move(targetImages)) {
+FollowPerson::FollowPerson(core::Control& control, std::string targetImages, std::string debugDir)
+    : roboControl(control), targetImages(std::move(targetImages)), debugDir(std::move(debugDir)) {
     videoClient.Init();
     obstacleMap.init();
 }
@@ -102,25 +65,60 @@ void FollowPerson::run() {
     runWithMultipose();
 }
 
+void FollowPerson::collectDetections(const movenet::Multipose& detector, std::vector<PersonDetection>& out) {
+    out.clear();
+    const cv::Mat& frame = detector.frame();
+    const cv::Rect2f bounds(0, 0, frame.cols, frame.rows);
+
+    for (int d = 0; d < detector.modelDetectionCount(); d++) {
+        const auto box = detector.getBox(d);
+        if (box.confidence < MIN_CONFIDENCE) continue;
+
+        PersonDetection person;
+        person.score = box.confidence;
+        const cv::Point2f topLeft = detector.toFrame(box.xmin, box.ymin);
+        const cv::Point2f bottomRight = detector.toFrame(box.xmax, box.ymax);
+        person.box = cv::Rect2f(topLeft, bottomRight) & bounds;
+        if (person.box.width <= 0 || person.box.height <= 0) continue;
+
+        for (int k = 0; k < PersonDetection::KEYPOINT_COUNT; k++) {
+            // Movenet's keypoints are stored as (y, x, confidence): Keypoint::x is the
+            // row and Keypoint::y the column
+            const auto keypoint = detector.getKeypoint(d, k);
+            person.keypoints[k] = detector.toFrame(keypoint.y, keypoint.x);
+            person.confidence[k] = keypoint.confidence;
+        }
+        out.push_back(person);
+    }
+}
+
 void FollowPerson::runWithMultipose() {
     movenet::Multipose detector;
     if (!detector.init()) return;
 
+    if (!tracker.init()) return;
     if (!targetImages.empty()) {
-        if (!identifier.load(targetImages)) {
-            std::cerr << "[FollowPerson] no face found in the images in " << targetImages << std::endl;
+        if (!tracker.loadReferencePhotos(targetImages)) {
+            std::cerr << "[FollowPerson] no usable face found in the photos in " << targetImages << std::endl;
             return;
         }
-        identify = true;
-        std::cout << "[FollowPerson] waiting to see the face of the person from the images" << std::endl;
+        std::cout << "[FollowPerson] waiting to see the face of the person from the photos" << std::endl;
+    } else {
+        std::cout << "[FollowPerson] no photos given, following the first person seen" << std::endl;
     }
 
-    // the first person we saw, which is tracked until it is lost
-    bool targetFound = false;
-    movenet::Box targetBox {0, 0, 0, 0, 0};
-    int countNotFound = 0;
-    int frameCount = 0;
+    if (!debugDir.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(debugDir, error);
+        if (error) {
+            std::cerr << "[FollowPerson] cannot create " << debugDir << ": " << error.message() << ", debug frames off" << std::endl;
+            debugDir.clear();
+        } else {
+            std::cout << "[FollowPerson] writing debug frames to " << debugDir << std::endl;
+        }
+    }
 
+    std::vector<PersonDetection> detections;
     int stairSamples = 0;
     float levelHeight = roboControl.positionZ();
 
@@ -137,8 +135,8 @@ void FollowPerson::runWithMultipose() {
             } else {
                 std::cout << "[FollowPerson] stopped exploring, following again" << std::endl;
             }
-            // afterwards follow whoever (or the identified person) shows up first
-            targetFound = false;
+            // afterwards follow whoever is recognized next
+            tracker.dropTarget();
             roamSearching = false;
         }
 
@@ -164,120 +162,26 @@ void FollowPerson::runWithMultipose() {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        const float rx = roboControl.positionX();
-        const float ry = roboControl.positionY();
-        const float yaw = roboControl.yaw();
+        const RobotPose pose {roboControl.positionX(), roboControl.positionY(), roboControl.yaw()};
+        const cv::Mat& frame = detector.frame();
 
-        // where the person should be by now, from their last position and velocity
-        const float sinceSeen = std::chrono::duration<float>(now - lastSeen).count();
-        const float t = std::min(sinceSeen, PREDICT_HORIZON);
-        const float predX = personX + personVX * t;
-        const float predY = personY + personVY * t;
-        const float predAngle = wrapAngle(std::atan2(predY - ry, predX - rx) - yaw);
-        const float predDistance = std::hypot(predX - rx, predY - ry);
-
-        const bool tracking = targetFound && countNotFound == 0 && !roamSearching;
-        if (identify) {
-            if (!tracking || ++frameCount % FACE_CHECK_INTERVAL == 0) identifier.detectFaces(detector);
-            else identifier.clearFaces();
-        }
-
-        // find our person among the detections:
-        //  - nobody followed yet: the detection with the highest confidence
-        //  - still in view: the one whose center stays close to the last box
-        //  - out of view: the one closest to the predicted direction
-        // with reference images:
-        //  - nobody followed yet: only someone whose face matches
-        //  - a matching face always wins, wherever it is; a face that clearly doesn't
-        //    match is never taken
-        //  - out of view: found again by face, or from behind by the clothes learned
-        //    while their face was visible
-        int match = -1;
-        float bestScore = 0;
-        PersonIdentifier::Face matchFace = PersonIdentifier::Face::Unknown;
-        float matchSimilarity = -1;
-        for (int d = 0; d < detector.modelDetectionCount(); d++) {
-            const auto box = detector.getBox(d);
-            if (box.confidence < MIN_CONFIDENCE) continue;
-
-            float faceSimilarity = -1;
-            const auto face = identify ? identifier.face(detector, d, &faceSimilarity) : PersonIdentifier::Face::Unknown;
-            const float clothes = identify ? identifier.clothing(detector, d) : -1;
-            if (face == PersonIdentifier::Face::Mismatch) continue;
-
-            float score;
-            float similarity = -1;
-            if (face == PersonIdentifier::Face::Match) {
-                score = 2 + faceSimilarity;
-                similarity = faceSimilarity;
-            } else if (identify && !tracking) {
-                if (!targetFound || clothes < CLOTHING_SIMILARITY) {
-                    // shortly lost and too little visible to tell: fall back to the direction
-                    if (!targetFound || roamSearching || clothes >= 0) continue;
-                    const float diff = std::abs(wrapAngle(boxAngle(box) - predAngle));
-                    if (diff >= REACQUIRE_ANGLE) continue;
-                    score = REACQUIRE_ANGLE - diff;
-                } else {
-                    score = 1 + clothes;
-                    similarity = clothes;
-                }
-            } else if (!targetFound || roamSearching) {
-                // while roaming the prediction is outdated, whoever shows up is followed
-                score = box.confidence;
-            } else if (countNotFound == 0) {
-                // too little visible to tell (-1) is fine, clearly different clothes are not
-                if (identify && clothes >= 0 && clothes < TRACK_MIN_SIMILARITY) continue;
-                const float dx = boxCenterX(box) - boxCenterX(targetBox);
-                const float dy = (box.ymax - (box.ymax - box.ymin) / 2) - (targetBox.ymax - (targetBox.ymax - targetBox.ymin) / 2);
-                const float dist = std::sqrt(dx * dx + dy * dy);
-                if (dist >= PERSON_CENTER_TOLERANCE) continue;
-                score = PERSON_CENTER_TOLERANCE - dist;
-            } else {
-                const float diff = std::abs(wrapAngle(boxAngle(box) - predAngle));
-                if (diff >= REACQUIRE_ANGLE) continue;
-                score = REACQUIRE_ANGLE - diff;
-            }
-            if (score > bestScore) {
-                bestScore = score;
-                match = d;
-                matchFace = face;
-                matchSimilarity = similarity;
-            }
-        }
+        collectDetections(detector, detections);
+        const auto& target = tracker.update(detections, frame, pose, now);
+        if (!debugDir.empty()) saveDebugFrame(frame, now);
 
         float distance, personAngle;
-        if (match >= 0) {
-            const auto box = detector.getBox(match);
-            if (!targetFound || countNotFound >= LOST_FRAMES) {
-                std::cout << "[FollowPerson] " << (targetFound ? "found person again" : "found person, following");
-                if (identify && matchSimilarity >= 0)
-                    std::cout << " (" << (matchFace == PersonIdentifier::Face::Match ? "face" : "clothes")
-                              << " similarity " << matchSimilarity << ")";
-                std::cout << std::endl;
-            }
+        if (target.visible) {
             roamSearching = false;
-            // their face is visible: remember how their clothes look on this camera
-            if (matchFace == PersonIdentifier::Face::Match) identifier.learnClothing(detector, match);
-
-            distance = boxDistance(box);
-            personAngle = boxAngle(box);
-            updatePersonTrack(rx + distance * std::cos(yaw + personAngle),
-                              ry + distance * std::sin(yaw + personAngle),
-                              targetFound && countNotFound == 0, now);
-            lostSide = personAngle > 0 ? 1 : -1;
-
-            targetFound = true;
-            targetBox = box;
-            countNotFound = 0;
+            distance = CameraGeometry::distance(target.target.box, frame.cols);
+            personAngle = CameraGeometry::angle(target.target.box, frame.cols);
+        } else if (target.state == TargetTracker::State::Searching) {
+            // nobody to follow (yet): wait where we are
+            stop();
+            continue;
         } else {
-            if (!targetFound) continue;
-
-            if (++countNotFound == LOST_FRAMES)
-                std::cout << "[FollowPerson] person out of view, searching" << std::endl;
-
             // not where they were heading: walk around semi-randomly, the detector keeps
             // running every step, so the person is followed again as soon as they show up
-            if (sinceSeen > SEARCH_TIMEOUT) {
+            if (target.secondsSinceSeen > SEARCH_TIMEOUT) {
                 if (!roamSearching) {
                     std::cout << "[FollowPerson] person not found nearby, roaming around to find them" << std::endl;
                     explorer.reset();
@@ -291,9 +195,8 @@ void FollowPerson::runWithMultipose() {
 
             // head for the predicted position; it's outside the camera view, so turning
             // toward it means looking in the direction the person left
-            distance = predDistance;
-            personAngle = predAngle;
-            if (std::abs(predAngle) > 0.1f) lostSide = predAngle > 0 ? 1 : -1;
+            distance = target.predictedDistance;
+            personAngle = target.predictedAngle;
         }
 
         // proportional control so the motion is smooth instead of walking straight and
@@ -316,13 +219,26 @@ void FollowPerson::runWithMultipose() {
 
         // arrived where the person should be but still can't see them: look around,
         // starting with the side they disappeared to
-        if (match < 0 && predDistance < SEARCH_ARRIVED) {
+        if (!target.visible && target.predictedDistance < SEARCH_ARRIVED) {
             x = 0;
-            z = lostSide * SEARCH_TURN_SPEED;
+            z = target.lostSide * SEARCH_TURN_SPEED;
         }
 
         drive(x, z);
     }
+}
+
+void FollowPerson::saveDebugFrame(const cv::Mat& frame, std::chrono::steady_clock::time_point now) {
+    if (frame.empty() || now - lastDebugFrame < DEBUG_FRAME_INTERVAL) return;
+    lastDebugFrame = now;
+
+    cv::Mat annotated = frame.clone();
+    tracker.drawDebug(annotated);
+    std::ostringstream name;
+    name << "frame_" << std::setw(5) << std::setfill('0') << debugFrameCount++ << ".jpg";
+    const auto path = std::filesystem::path(debugDir) / name.str();
+    if (!cv::imwrite(path.string(), annotated, {cv::IMWRITE_JPEG_QUALITY, 80}))
+        std::cerr << "[FollowPerson] could not write " << path << std::endl;
 }
 
 void FollowPerson::drive(float x, float z) {
@@ -382,25 +298,6 @@ void FollowPerson::stop() {
     moving = false;
 }
 
-void FollowPerson::updatePersonTrack(float x, float y, bool continuous, std::chrono::steady_clock::time_point now) {
-    const float dt = std::chrono::duration<float>(now - lastSeen).count();
-    if (continuous && dt > 0) {
-        // smoothed, because the distance estimate from the box width is noisy
-        personVX += VELOCITY_SMOOTHING * ((x - personX) / dt - personVX);
-        personVY += VELOCITY_SMOOTHING * ((y - personY) / dt - personVY);
-        const float speed = std::hypot(personVX, personVY);
-        if (speed > MAX_PERSON_SPEED) {
-            personVX *= MAX_PERSON_SPEED / speed;
-            personVY *= MAX_PERSON_SPEED / speed;
-        }
-    } else {
-        personVX = personVY = 0;
-    }
-    personX = x;
-    personY = y;
-    lastSeen = now;
-}
-
 float FollowPerson::planHeading(float personAngle, float distance, float& clearance) {
     const float needed = std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD);
     if (!obstacleMap.available() || needed <= 0) {
@@ -425,7 +322,7 @@ float FollowPerson::planHeading(float personAngle, float distance, float& cleara
                 break;
             }
         }
-        const float heading = wrapAngle(std::atan2(aim.second - y, aim.first - x) - yaw);
+        const float heading = CameraGeometry::wrapAngle(std::atan2(aim.second - y, aim.first - x) - yaw);
         const float aimDistance = std::hypot(aim.first - x, aim.second - y);
         clearance = obstacleMap.freeDistance(x, y, yaw + heading, std::max(std::min(needed, aimDistance), MIN_CLEARANCE));
         // the route already goes around everything, only nearby obstacles slow it down
