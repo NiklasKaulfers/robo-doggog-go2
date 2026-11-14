@@ -37,6 +37,11 @@ target_link_libraries(facecheck recognition ${OpenCV_LIBS})
 add_executable(trackertest tools/trackertest.cpp)
 target_link_libraries(trackertest recognition ${OpenCV_LIBS})
 
+# self-test of the clothes model (body regions, color signatures, learned views) with
+# drawn people, needs neither the robot nor the models
+add_executable(appearancetest tools/appearancetest.cpp)
+target_link_libraries(appearancetest recognition ${OpenCV_LIBS})
+
 # self-test of the obstacle map and route planning with synthetic height maps, needs
 # neither the robot nor the models
 add_executable(maptest tools/maptest.cpp)

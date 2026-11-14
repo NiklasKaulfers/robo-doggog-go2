@@ -14,9 +14,12 @@
 
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
+#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "../src/ml/PersonDetection.h"
 #include "../src/tracking/CameraGeometry.h"
@@ -105,6 +108,19 @@ struct TargetTrackerProbe {
         t->face.size = 60;
         t->face.similarity = 0.05f;
         t->face.verdict = FaceRecognizer::Verdict::Mismatch;
+    }
+    static cv::Rect2f headRegion(const PersonDetection& person) { return TargetTracker::headRegion(person); }
+    // how fast the target is thought to walk in the world, m/s
+    static float personSpeed(const TargetTracker& tracker) { return std::hypot(tracker.personVX, tracker.personVY); }
+    static bool hasSignature(TargetTracker& tracker, float x) {
+        auto* t = nearest(tracker, x);
+        return t && !t->signature.empty();
+    }
+    static bool tracking(const TargetTracker& tracker, float x) {
+        for (const auto& t : tracker.tracks) {
+            if (t.id == tracker.targetId && std::abs(t.person.box.x - x) < 1) return true;
+        }
+        return false;
     }
     static std::vector<cv::Rect2f> boxes(const TargetTracker& tracker) {
         std::vector<cv::Rect2f> result;
@@ -279,6 +295,186 @@ int main() {
         check(!run(paused, now, {other}, pose12, 60s).visible, "the other person is not taken for the target");
         for (int i = 0; i < 3; i++) run(paused, now, {aliceMoved, other}, pose12);
         check(paused.status().visible && std::abs(paused.status().target.box.x - aliceMoved.x) < 1, "the target is found again by their clothes");
+    }
+
+
+    std::cout << "13. reference photos that can't be used" << std::endl;
+    {
+        TargetTracker photos;
+        photos.init("./res");
+        const auto folder = std::filesystem::temp_directory_path() / "trackertest_photos";
+        std::filesystem::remove_all(folder);
+        check(!photos.loadReferencePhotos((folder / "missing").string()) && !photos.hasReferencePhotos(), "a folder that doesn't exist enrolls nothing");
+        std::filesystem::create_directories(folder);
+        check(!photos.loadReferencePhotos(folder.string()) && !photos.hasReferencePhotos(), "an empty folder enrolls nothing");
+        cv::Mat noFace(300, 300, CV_8UC3, cv::Scalar(90, 120, 150));
+        cv::circle(noFace, cv::Point(150, 150), 80, cv::Scalar(30, 30, 200), cv::FILLED);
+        cv::imwrite((folder / "nobody.png").string(), noFace);
+        std::ofstream((folder / "broken.jpg").string()) << "not an image";
+        check(!photos.loadReferencePhotos(folder.string()) && !photos.hasReferencePhotos(), "photos without a face enroll nothing");
+        // without photos the first person is still followed
+        for (int i = 0; i < 6; i++) run(photos, now, {alice}, still);
+        check(photos.status().visible, "so the first person is followed anyway");
+        std::filesystem::remove_all(folder);
+    }
+
+    std::cout << "14. the face region of a head" << std::endl;
+    {
+        PersonDetection p;
+        p.box = cv::Rect2f(100, 100, 200, 600);
+        check(Probe::headRegion(p).empty(), "no face keypoints: no region (seen from behind)");
+        auto set = [&](int k, float x, float y) { p.keypoints[k] = cv::Point2f(x, y); p.confidence[k] = 0.9f; };
+        set(PersonDetection::NOSE, 200, 160);
+        const float fromBox = Probe::headRegion(p).width;
+        check(std::abs(fromBox - 200 * 0.35f * 1.7f) < 0.1f, "only the nose: size from the body width (" + std::to_string(fromBox) + ")");
+        set(PersonDetection::LEFT_EYE, 215, 145);
+        set(PersonDetection::RIGHT_EYE, 185, 145);
+        const float fromEyes = Probe::headRegion(p).width;
+        check(std::abs(fromEyes - 30 * 3.0f * 1.7f) < 0.1f, "with eyes: size from the eye distance (" + std::to_string(fromEyes) + ")");
+        set(PersonDetection::LEFT_EAR, 230, 150);
+        set(PersonDetection::RIGHT_EAR, 170, 150);
+        const cv::Rect2f withEars = Probe::headRegion(p);
+        check(std::abs(withEars.width - 60 * 1.4f * 1.7f) < 0.1f, "with ears: size from the ear distance (" + std::to_string(withEars.width) + ")");
+        check(withEars.contains(cv::Point2f(200, 155)), "the region covers the face");
+        // a tiny head is not made smaller than the detector can use
+        for (int k : {1, 2, 3, 4}) p.confidence[k] = 0;
+        p.box.width = 20;
+        check(Probe::headRegion(p).width >= 16 * 1.7f - 0.1f, "never smaller than the minimum");
+    }
+
+    std::cout << "15. the clothes can't be seen for a moment" << std::endl;
+    {
+        TargetTracker hidden;
+        hidden.init("./res");
+        for (int i = 0; i < 12; i++) run(hidden, now, {alice}, still);
+        check(hidden.status().visible && hidden.status().clothingSimilarity > 0.8f, "following them, clothes known");
+        // the same box, but now a person without keypoints in a box too wide to guess the body from
+        cv::Mat frame(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC3, cv::Scalar(120, 120, 120));
+        PersonDetection crouched;
+        crouched.box = alice.detection().box;
+        crouched.box.y += 300;
+        crouched.box.height = 150;
+        crouched.score = 0.8f;
+        now += 100ms;
+        const auto& s = hidden.update({crouched}, frame, still, now);
+        check(s.visible && s.clothingSimilarity == -1, "still followed, but no clothes evidence from this frame");
+        check(Probe::hasSignature(hidden, alice.x) == false, "the old signature was cleared, not kept");
+    }
+
+    std::cout << "16. the face of someone else matches the target's better" << std::endl;
+    {
+        TargetTracker swap;
+        swap.init("./res");
+        for (int i = 0; i < 12; i++) run(swap, now, {alice}, still);
+        for (int i = 0; i < 3; i++) run(swap, now, {alice, bob}, still);
+        check(std::abs(swap.status().target.box.x - alice.x) < 1, "following the first person");
+        Probe::setFaceEvidence(swap, bob.x, 0.9f);
+        const auto& s = run(swap, now, {alice, bob}, still);
+        check(s.visible && std::abs(s.target.box.x - bob.x) < 1, "the target switched to the person whose face matches");
+    }
+
+    std::cout << "17. the target is dropped and a face is recognized, other clothes or not" << std::endl;
+    {
+        TargetTracker found;
+        found.init("./res");
+        for (int i = 0; i < 12; i++) run(found, now, {alice}, still);
+        found.dropTarget();
+        check(!found.status().visible && found.status().state == TargetTracker::State::Searching, "after dropping nobody is followed");
+        Probe::setFaceEvidence(found, alice.x, 0.0f);
+        for (int i = 0; i < 3; i++) run(found, now, {alice, bob}, still);
+        Probe::setFaceEvidence(found, bob.x, 0.9f);
+        const auto& s = run(found, now, {alice, bob}, still);
+        check(s.visible && std::abs(s.target.box.x - bob.x) < 1, "the person whose face matched is followed, not the one with the right clothes");
+    }
+
+    std::cout << "17b. two faces match at once" << std::endl;
+    {
+        TargetTracker both;
+        both.init("./res");
+        Person farAlice = alice;
+        farAlice.scale = 0.8f;
+        for (int i = 0; i < 3; i++) run(both, now, {farAlice, bob}, still);
+        both.dropTarget();
+        Probe::setFaceEvidence(both, farAlice.x, 0.9f);
+        Probe::setFaceEvidence(both, bob.x, 0.9f);
+        const auto& s = run(both, now, {farAlice, bob}, still);
+        check(s.visible && std::abs(s.target.box.x - bob.x) < 1, "with equal evidence the closer (larger) person is followed");
+        both.dropTarget();
+        Probe::setFaceEvidence(both, farAlice.x, 0.95f);
+        const auto& t = run(both, now, {farAlice, bob}, still);
+        check(t.visible && std::abs(t.target.box.x - farAlice.x) < 1, "with more evidence for the other, they are followed");
+    }
+
+    std::cout << "18. someone with other clothes appears where the target disappeared" << std::endl;
+    {
+        TargetTracker gap;
+        gap.init("./res");
+        for (int i = 0; i < 12; i++) run(gap, now, {alice}, still);
+        for (int i = 0; i < 4; i++) run(gap, now, {}, still);
+        check(!gap.status().visible && gap.status().state == TargetTracker::State::Lost, "the target is out of view");
+        Person other = bob;
+        other.x = alice.x;
+        check(!run(gap, now, {other}, still).visible, "the newcomer in their place is not taken for them");
+        check(!Probe::tracking(gap, other.x), "and the target is let go");
+    }
+
+    std::cout << "19. a newcomer shows up in the direction the target went" << std::endl;
+    {
+        TargetTracker heading;
+        heading.init("./res");
+        for (int i = 0; i < 12; i++) run(heading, now, {alice}, still);
+        // the target track dies after 8 missed frames (0.9 s without them)
+        for (int i = 0; i < 9; i++) run(heading, now, {}, still);
+        check(heading.status().state == TargetTracker::State::Lost, "lost");
+        // the same clothes show up for the first frame next to where they were, and far away
+        Person near = alice;
+        near.x = alice.x + 60;
+        Person far = alice;
+        far.x = 1000;
+        far.scale = 0.5f;
+        const auto& s = run(heading, now, {far, near}, still);
+        check(s.visible && std::abs(s.target.box.x - near.x) < 1, "the one closest to where they were heading is taken");
+    }
+
+    std::cout << "20. a noisy jump of the target doesn't make them run faster than a person can" << std::endl;
+    {
+        TargetTracker fast;
+        fast.init("./res");
+        Person runner {200, alice.shirt, alice.trousers, 0.4f};
+        bool followed = true;
+        for (int i = 0; i < 20; i++) {
+            runner.x += 60;     // 600 px/s across the image
+            if (!run(fast, now, {runner}, still).visible && i > 2) followed = false;
+        }
+        check(followed, "followed all the way");
+        const float speed = Probe::personSpeed(fast);
+        check(speed > 1.4f && speed <= 1.5f + 1e-3f, "the speed is capped at 1.5 m/s (" + std::to_string(speed) + ")");
+    }
+
+    std::cout << "21. the debug drawing" << std::endl;
+    {
+        TargetTracker drawn;
+        drawn.init("./res");
+        for (int i = 0; i < 12; i++) run(drawn, now, {alice, bob}, still);
+        cv::Mat image(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
+        drawn.drawDebug(image);
+        check(cv::countNonZero(image.reshape(1)) > 1000, "people and the status are drawn");
+        // the target's frame is green
+        check(image.at<cv::Vec3b>(static_cast<int>(alice.top()), static_cast<int>(alice.x) + 100) == cv::Vec3b(0, 200, 0), "the target's box is green");
+        check(image.at<cv::Vec3b>(static_cast<int>(bob.top()), static_cast<int>(bob.x) + 100) == cv::Vec3b(160, 160, 160), "the others' is gray");
+        // a face that surely isn't the person's turns a box red
+        Probe::setFaceEvidence(drawn, bob.x, -0.8f);
+        cv::Mat red(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
+        drawn.drawDebug(red);
+        check(red.at<cv::Vec3b>(static_cast<int>(bob.top()), static_cast<int>(bob.x) + 100) == cv::Vec3b(0, 0, 220), "a rejected face is red");
+        // and while lost
+        for (int i = 0; i < 4; i++) run(drawn, now, {bob}, still);
+        cv::Mat lost(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
+        drawn.drawDebug(lost);
+        check(cv::countNonZero(lost.reshape(1)) > 0, "drawing while lost works");
+        cv::Mat nothing;
+        drawn.drawDebug(nothing);
+        check(nothing.empty(), "an empty image is left alone");
     }
 
     std::cout << (failures ? "\nFAILED" : "\nall checks passed") << std::endl;
