@@ -22,6 +22,13 @@ add_library(recognition STATIC
 )
 target_link_libraries(recognition ${OpenCV_LIBS})
 
+# terrain memory and route planning, plain C++ (the DDS subscription is in the app), so
+# it is shared by the app and the offline tools as well
+add_library(navigation STATIC
+        src/core/ObstacleMap.cpp
+        src/core/ObstacleMap.h
+)
+
 # checks the reference photos of the person to follow, runs without the robot
 add_executable(facecheck tools/facecheck.cpp)
 target_link_libraries(facecheck recognition ${OpenCV_LIBS})
@@ -29,6 +36,11 @@ target_link_libraries(facecheck recognition ${OpenCV_LIBS})
 # self-test of the tracking logic with drawn people, runs without the robot
 add_executable(trackertest tools/trackertest.cpp)
 target_link_libraries(trackertest recognition ${OpenCV_LIBS})
+
+# self-test of the obstacle map and route planning with synthetic height maps, needs
+# neither the robot nor the models
+add_executable(maptest tools/maptest.cpp)
+target_link_libraries(maptest navigation)
 
 # the robot app needs the Unitree SDK and LiteRT, which only exist on the Go2's Jetson.
 # Set FOLLOW_TOOLS_ONLY=ON to build just the offline tools elsewhere
@@ -49,8 +61,8 @@ if (NOT FOLLOW_TOOLS_ONLY)
             src/main.cpp
             src/core/Control.cpp
             src/core/Control.h
-            src/core/ObstacleMap.cpp
-            src/core/ObstacleMap.h
+            src/core/ObstacleMapSubscriber.cpp
+            src/core/ObstacleMapSubscriber.h
             src/ml/movenet/Movenet.cpp
             src/ml/movenet/Movenet.h
             src/ml/movenet/Multipose.cpp
@@ -66,5 +78,5 @@ if (NOT FOLLOW_TOOLS_ONLY)
             src/tricks/Explore.cpp
             src/tricks/Explore.h
     )
-    target_link_libraries(app recognition unitree_sdk2 litert_cc_api ${OpenCV_LIBS})
+    target_link_libraries(app recognition navigation unitree_sdk2 litert_cc_api ${OpenCV_LIBS})
 endif ()

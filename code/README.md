@@ -50,11 +50,11 @@ This file describes what the code does and how it is put together.
 
 | Folder | Role |
 | --- | --- |
-| `src/core/` | Robot access. **`Control`** wraps the Unitree SDK: robot state (pose, IMU) and remote controller input arrive over DDS; movement commands go out via `ObstacleAvoidClient` (never directly via `SportClient::Move`, which would bypass avoidance). It tracks remote activity, hands control back when the remote is used or the program stops, and detects the explore button combo (L1 + R1 + Y). **`ObstacleMap`** copies the small LiDAR height map into a larger grid that remembers terrain for a few minutes, and offers free-distance queries, A*-style route planning and reachable/frontier spots. |
+| `src/core/` | Robot access. **`Control`** wraps the Unitree SDK: robot state (pose, IMU) and remote controller input arrive over DDS; movement commands go out via `ObstacleAvoidClient` (never directly via `SportClient::Move`, which would bypass avoidance). It tracks remote activity, hands control back when the remote is used or the program stops, and detects the explore button combo (L1 + R1 + Y). **`ObstacleMap`** copies the small LiDAR height map into a larger grid that remembers terrain for a few minutes, and offers free-distance queries, A*-style route planning (with a mild preference for the previous route, and able to end next to the person at the goal) and reachable/frontier spots. It is plain C++ without SDK types: frames come in as `HeightMapFrame` through `integrate()`, `secondsSinceUpdate()` tells how old the map is and `checkFrame()` warns when the map and odometry disagree. **`ObstacleMapSubscriber`** is the small SDK part that subscribes to `rt/utlidar/height_map_array` and feeds it in. |
 | `src/ml/` | Perception, no robot dependencies except the MoveNet wrapper. **`PersonDetection`** is the only type shared between detector and recognition code. **`FaceRecognizer`** (YuNet + SFace, OpenCV DNN) holds a gallery of known faces and returns match / mismatch / unknown. **`Appearance`** describes clothes as histograms and keeps a set of views (anchor views learned while the face matched are never forgotten). **`movenet/`** runs the pose models through LiteRT. |
 | `src/tracking/` | **`TargetTracker`** is the decision maker: it associates detections to tracks, accumulates face and clothing evidence, picks and keeps the target, drops it when clothes or face contradict, takes it over when a face matches someone else, and predicts where a lost person went (in the odometry frame). **`CameraGeometry.h`** converts pixels to angle and distance. |
 | `src/tricks/` | Behaviours built on `Control`. **`FollowPerson`** is the real application. **`Explore`** roams to new spots. **`TurnToPerson`** and **`SitStandApproach`** are earlier experiments (gesture and turn demos), kept but not used by `main`. |
-| `tools/` | Offline tools that need only OpenCV: **`facecheck`** (quality of reference photos) and **`trackertest`** (self-test of the tracking logic with drawn people). |
+| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`trackertest`** (self-test of the tracking logic with drawn people) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
 | `res/` | Models: `face_detection_yunet_2022mar.onnx`, `face_recognition_sface_2021dec.onnx`, `movenet-multipose.tflite`, `movenet-singlepose.tflite`. `res/target/` (git-ignored) holds the reference photos. |
 
 ### Dependency split
@@ -64,14 +64,18 @@ The CMake project builds two parts:
 - **`recognition`** (static library): `FaceRecognizer`, `Appearance`, `TargetTracker`,
   `CameraGeometry`, `PersonDetection`. Needs only OpenCV, so it is shared by the app
   and the offline tools and can be built on a laptop with `-DFOLLOW_TOOLS_ONLY=ON`.
-- **`app`**: everything else. Needs the Unitree SDK 2 (`../sdk/install`) and LiteRT
+- **`navigation`** (static library): `ObstacleMap`. Needs only the standard library,
+  also built with `-DFOLLOW_TOOLS_ONLY=ON` and tested by `maptest`.
+- **`app`**: everything else, including `ObstacleMapSubscriber` (the DDS side of the map). Needs the Unitree SDK 2 (`../sdk/install`) and LiteRT
   (`../sdk/litert`), which exist only in the Jetson devcontainer.
 
 ### Control loop (`FollowPerson::run`)
 
 Every iteration:
 
-1. Grab a camera frame and run the pose detector; convert to `PersonDetection`s.
+1. Grab a camera frame and run the pose detector; convert to `PersonDetection`s. If the
+   camera or detector fails, or the robot state (odometry/IMU) is older than 0.5 s, stop
+   for that iteration.
 2. Feed them, the frame and the robot pose to `TargetTracker::update`, which returns a
    `Status`: `Searching`, `Tracking` or `Lost`, plus the target's predicted angle and
    distance.
@@ -80,7 +84,9 @@ Every iteration:
 4. Otherwise choose movement:
    - **Tracking**: forward speed from the distance error (target distance 0.5 m), yaw
      from the angle error; `planHeading` replaces the heading with a detour when the
-     direct path is blocked, using `ObstacleMap`.
+     direct path is blocked, using `ObstacleMap`. Forward speed is limited by the free
+     distance both along that heading and straight ahead, and scaled by its cosine so the
+     robot turns onto a detour before walking. With a stale height map (> 1 s) it only turns.
    - **Lost**: walk toward the predicted position, look toward the side the person left,
      after 10 s roam with `Explore` while the detector keeps looking.
    - **Searching**: stand still and wait.
@@ -114,6 +120,7 @@ On a laptop with only OpenCV (offline tools):
 cmake -S . -B build-tools -DFOLLOW_TOOLS_ONLY=ON
 cmake --build build-tools
 ./build-tools/trackertest     # run from this folder, needs ./res
+./build-tools/maptest         # needs nothing, exit code 0 when all checks pass
 ```
 
-Binaries: `app` (robot), `facecheck`, `trackertest`.
+Binaries: `app` (robot), `facecheck`, `trackertest`, `maptest`.
