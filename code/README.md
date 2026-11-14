@@ -54,7 +54,7 @@ This file describes what the code does and how it is put together.
 | `src/ml/` | Perception, no robot dependencies except the MoveNet wrapper. **`PersonDetection`** is the only type shared between detector and recognition code. **`FaceRecognizer`** (YuNet + SFace, OpenCV DNN) holds a gallery of known faces and returns match / mismatch / unknown. **`Appearance`** describes clothes as histograms and keeps a set of views (anchor views learned while the face matched are never forgotten). **`movenet/`** runs the pose models through LiteRT. |
 | `src/tracking/` | **`TargetTracker`** is the decision maker: it associates detections to tracks, accumulates face and clothing evidence, picks and keeps the target, drops it when clothes or face contradict, takes it over when a face matches someone else, and predicts where a lost person went (in the odometry frame). **`CameraGeometry.h`** converts pixels to angle and distance. |
 | `src/tricks/` | Behaviours built on `Control`. **`FollowPerson`** is the real application. **`Explore`** roams to new spots. **`TurnToPerson`** and **`SitStandApproach`** are earlier experiments (gesture and turn demos), kept but not used by `main`. |
-| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`trackertest`** (self-test of the tracking logic with drawn people) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
+| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`trackertest`** (self-test of the tracking logic with drawn people) **`appearancetest`** (self-test of the clothes model), **`exploretest`** (self-test of `ExplorePlanner` with a simulated robot: stale map, frame mismatch, unreachable goals, timeouts, obstacle slow-down, a long run in a walled room) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
 | `res/` | Models: `face_detection_yunet_2022mar.onnx`, `face_recognition_sface_2021dec.onnx`, `movenet-multipose.tflite`, `movenet-singlepose.tflite`. `res/target/` (git-ignored) holds the reference photos. |
 
 ### Dependency split
@@ -64,8 +64,8 @@ The CMake project builds two parts:
 - **`recognition`** (static library): `FaceRecognizer`, `Appearance`, `TargetTracker`,
   `CameraGeometry`, `PersonDetection`. Needs only OpenCV, so it is shared by the app
   and the offline tools and can be built on a laptop with `-DFOLLOW_TOOLS_ONLY=ON`.
-- **`navigation`** (static library): `ObstacleMap`. Needs only the standard library,
-  also built with `-DFOLLOW_TOOLS_ONLY=ON` and tested by `maptest`.
+- **`navigation`** (static library): `ObstacleMap`, `ExplorePlanner`. Needs only the standard library,
+  also built with `-DFOLLOW_TOOLS_ONLY=ON` and tested by `maptest` and `exploretest`.
 - **`app`**: everything else, including `ObstacleMapSubscriber` (the DDS side of the map). Needs the Unitree SDK 2 (`../sdk/install`) and LiteRT
   (`../sdk/litert`), which exist only in the Jetson devcontainer.
 
@@ -121,6 +121,8 @@ cmake -S . -B build-tools -DFOLLOW_TOOLS_ONLY=ON
 cmake --build build-tools
 ./build-tools/trackertest     # run from this folder, needs ./res
 ./build-tools/maptest         # needs nothing, exit code 0 when all checks pass
+./build-tools/exploretest     # needs nothing, ~40 s (simulated room runs)
+./build-tools/appearancetest  # needs nothing
 ```
 
-Binaries: `app` (robot), `facecheck`, `trackertest`, `maptest`.
+Binaries: `app` (robot), `facecheck`, `trackertest`, `appearancetest`, `maptest`, `exploretest`.

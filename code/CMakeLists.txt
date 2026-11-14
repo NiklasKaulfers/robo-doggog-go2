@@ -27,6 +27,8 @@ target_link_libraries(recognition ${OpenCV_LIBS})
 add_library(navigation STATIC
         src/core/ObstacleMap.cpp
         src/core/ObstacleMap.h
+        src/core/ExplorePlanner.cpp
+        src/core/ExplorePlanner.h
 )
 
 # checks the reference photos of the person to follow, runs without the robot
@@ -46,6 +48,11 @@ target_link_libraries(appearancetest recognition ${OpenCV_LIBS})
 # neither the robot nor the models
 add_executable(maptest tools/maptest.cpp)
 target_link_libraries(maptest navigation)
+
+# self-test of the exploring logic with a simulated robot on synthetic terrain, needs
+# neither the robot nor the models
+add_executable(exploretest tools/exploretest.cpp)
+target_link_libraries(exploretest navigation)
 
 # the robot app needs the Unitree SDK and LiteRT, which only exist on the Go2's Jetson.
 # Set FOLLOW_TOOLS_ONLY=ON to build just the offline tools elsewhere
