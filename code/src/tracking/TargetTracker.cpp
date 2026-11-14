@@ -24,6 +24,9 @@ static constexpr int MAX_MISSES = 8;
 // the target not seen for this many frames counts as lost
 static constexpr int LOST_FRAMES = 3;
 static constexpr float VELOCITY_SMOOTHING = 0.5f;
+// s between frames: after a longer gap the tracks are too old to predict from or to
+// match against (the robot may have turned and walked meanwhile), they are started over
+static constexpr float MAX_FRAME_GAP = 0.5f;
 static constexpr float KEYPOINT_MIN_CONFIDENCE = 0.2f;
 
 // --- face evidence ---
@@ -99,6 +102,8 @@ bool TargetTracker::loadReferencePhotos(const std::string& folder) {
 }
 
 void TargetTracker::dropTarget() {
+    // nobody in view is trusted as the person anymore until recognized again
+    for (auto& t : tracks) t.verified = t.defining = false;
     targetId = -1;
     haveWorldTrack = false;
     visibleLastFrame = false;
@@ -174,8 +179,20 @@ cv::Rect2f TargetTracker::headRegion(const PersonDetection& person) {
 const TargetTracker::Status& TargetTracker::update(const std::vector<PersonDetection>& detections, const cv::Mat& frame,
                                                    const RobotPose& pose, Clock::time_point now) {
     frameSize = frame.size();
-    const float dt = haveTime ? std::max(seconds(now - lastUpdate), 1e-3f) : 0.1f;
-    const float yawChange = havePose ? CameraGeometry::wrapAngle(pose.yaw - lastPose.yaw) : 0;
+    float dt = haveTime ? std::max(seconds(now - lastUpdate), 1e-3f) : 0.1f;
+    float yawChange = havePose ? CameraGeometry::wrapAngle(pose.yaw - lastPose.yaw) : 0;
+
+    if (dt > MAX_FRAME_GAP) {
+        // no frames for a while (exploring, remote controller, camera trouble): the robot
+        // may have turned any amount and people moved, so the boxes say nothing about who
+        // is where now. Start over with the people in view; the world track is kept for
+        // finding the target again
+        if (!tracks.empty())
+            std::cout << "[Tracker] no frames for " << num(dt, 1) << "s, forgetting who was where in the image" << std::endl;
+        tracks.clear();
+        dt = 0.1f;
+        yawChange = 0;
+    }
 
     predictTracks(dt, yawChange);
     associate(detections, now, dt);
@@ -297,7 +314,10 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
     // the target first, then the largest (closest) people
     std::vector<Track*> order;
     for (auto& t : tracks) {
+        // everyone starts without a face this frame, also those past the check limit,
+        // otherwise their last observation would count again below
         t.faceChecked = false;
+        t.face = FaceRecognizer::Observation();
         if (t.matched) order.push_back(&t);
     }
     std::sort(order.begin(), order.end(), [&](const Track* a, const Track* b) {
@@ -307,7 +327,6 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
 
     int checks = 0;
     for (Track* t : order) {
-        t->face = FaceRecognizer::Observation();
         if (checks >= MAX_FACE_CHECKS) break;
         const cv::Rect2f head = headRegion(t->person);
         if (head.empty()) continue;
@@ -328,7 +347,10 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
                                                   (FaceRecognizer::STRONG_MATCH - FaceRecognizer::MATCH_THRESHOLD), 0.0f, 1.0f);
                 t.faceEvidence += (1 - t.faceEvidence) * (0.5f + 0.5f * strength);
                 t.lastFaceMatch = now;
-                if (identifiedByFace(t)) t.verified = true;
+                if (identifiedByFace(t)) {
+                    t.verified = true;
+                    t.excluded = false;
+                }
                 break;
             }
             case Verdict::Mismatch:
@@ -358,7 +380,8 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         const bool recentFace = seconds(now - target->lastFaceMatch) < RECENT_FACE_MATCH;
         const char* dropReason = nullptr;
         std::string details;
-        if (rejectedByFace(*target)) {
+        const bool faceRejected = rejectedByFace(*target);
+        if (faceRejected) {
             dropReason = "their face is not the one being looked for";
             details = "face similarity " + num(target->face.similarity);
         } else if (!clothes.empty() && target->clothingLow >= CLOTHING_LOW_FRAMES && !recentFace) {
@@ -371,8 +394,17 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         }
         if (dropReason) {
             std::cout << "[Tracker] dropping the person followed, " << dropReason << " (" << details << ")" << std::endl;
-            // the continuity of the track is in doubt, so is the evidence it collected
-            target->faceEvidence = 0;
+            // the continuity of the track is in doubt, so is the evidence it collected:
+            // it is not trusted (learned from) anymore
+            target->verified = target->defining = false;
+            if (faceRejected) {
+                // their face says they are someone else: keep that (the evidence would
+                // decay out of "rejected" within a frame) so they aren't picked again by
+                // their clothes or position right away
+                target->excluded = true;
+            } else {
+                target->faceEvidence = 0;
+            }
             targetId = -1;
             target = nullptr;
             // where the wrong person went says nothing about the right one
@@ -424,7 +456,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         // 2. the clothes learned from them
         if (!chosen && !clothes.empty()) {
             for (auto& t : tracks) {
-                if (!t.matched || t.hits < FIRST_PERSON_STABLE_FRAMES || rejectedByFace(t)) continue;
+                if (!t.matched || t.excluded || t.hits < FIRST_PERSON_STABLE_FRAMES || rejectedByFace(t)) continue;
                 if (t.clothingAverage < REACQUIRE_CLOTHING) continue;
                 if (!chosen || t.clothingAverage > chosen->clothingAverage) chosen = &t;
             }
@@ -435,7 +467,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         if (!chosen && current.state == State::Lost && haveWorldTrack && sinceSeen < QUICK_REACQUIRE) {
             float bestDiff = REACQUIRE_ANGLE;
             for (auto& t : tracks) {
-                if (!t.matched || rejectedByFace(t)) continue;
+                if (!t.matched || t.excluded || rejectedByFace(t)) continue;
                 if (seconds(lastSeen - t.firstSeen) > NEW_TRACK_SLACK) continue;
                 if (t.clothingSimilarity >= 0 && t.clothingSimilarity < TRACK_MIN_SIMILARITY) continue;
                 const float angle = CameraGeometry::angle(t.person.box, frameSize.width);
@@ -451,7 +483,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         // 4. nothing to recognize anyone by: the first person that stays in view
         if (!chosen && !identityKnown()) {
             for (auto& t : tracks) {
-                if (!t.matched || t.hits < FIRST_PERSON_STABLE_FRAMES) continue;
+                if (!t.matched || t.excluded || t.hits < FIRST_PERSON_STABLE_FRAMES) continue;
                 if (!chosen || t.person.score > chosen->person.score) chosen = &t;
             }
             if (chosen) {
@@ -489,7 +521,9 @@ void TargetTracker::learnFromTarget(Track& target, Clock::time_point now) {
     const bool goodFace = face.found && face.size >= FaceRecognizer::MIN_LEARN_FACE_SIZE &&
                           face.quality >= FaceRecognizer::MIN_LEARN_QUALITY;
 
-    if (!faces.hasReferences() && cameraReferences < MAX_CAMERA_REFERENCES && goodFace && clear && trusted &&
+    // gated on the photos, not on the gallery: the faces learned here go into the
+    // gallery's references too, so that would stop after the first one
+    if (!referencePhotos && cameraReferences < MAX_CAMERA_REFERENCES && goodFace && clear && trusted &&
         (faces.gallerySize() == 0 || face.similarity >= FaceRecognizer::MATCH_THRESHOLD)) {
         // no photos: the face of the person being followed becomes the identity
         faces.learn(face.feature, true);
@@ -580,7 +614,7 @@ void TargetTracker::drawDebug(cv::Mat& image) const {
         if (!t.matched) continue;
         const bool isTarget = t.id == targetId;
         cv::Scalar color = isTarget ? cv::Scalar(0, 200, 0) : cv::Scalar(160, 160, 160);
-        if (rejectedByFace(t)) color = cv::Scalar(0, 0, 220);
+        if (rejectedByFace(t) || t.excluded) color = cv::Scalar(0, 0, 220);
         else if (!isTarget && identifiedByFace(t)) color = cv::Scalar(0, 200, 200);
 
         cv::rectangle(image, t.person.box, color, isTarget ? 3 : 1);
