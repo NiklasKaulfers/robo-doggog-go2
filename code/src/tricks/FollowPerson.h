@@ -3,6 +3,7 @@
 
 #include "../core/Control.h"
 #include "../core/ObstacleMap.h"
+#include "../core/ObstacleMapSubscriber.h"
 #include "Explore.h"
 #include "unitree/robot/go2/video/video_client.hpp"
 #include "vector"
@@ -28,6 +29,8 @@ class FollowPerson {
     bool stairMode = false;
 
     core::ObstacleMap obstacleMap;
+    // feeds the LiDAR height map into obstacleMap
+    core::ObstacleMapSubscriber mapSubscriber {obstacleMap, roboControl};
     // 1 = left, -1 = right; detours keep going around the same side
     int lastDetourSide = 1;
 

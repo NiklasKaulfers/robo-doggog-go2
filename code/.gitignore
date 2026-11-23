@@ -5,3 +5,7 @@ res/target/
 # build output and debug frames written by `app --debug`
 build/
 debug/
+
+# test build of scripts/pre-install-check.sh and other build folders
+build-*/
+cmake-build-*/

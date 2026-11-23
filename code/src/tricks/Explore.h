@@ -32,6 +32,8 @@ class Explore {
     std::mt19937 rng {std::random_device {}()};
     // status messages are printed at most every few seconds
     std::chrono::steady_clock::time_point lastLog;
+    // the height map stopped updating; logged once when it starts and once when it ends
+    bool mapStale = false;
 
 public:
 

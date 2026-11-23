@@ -33,6 +33,7 @@ Check them without the robot (also builds on a laptop with OpenCV, see below):
 ./build/facecheck ./res/target                    # how well the photos agree with each other
 ./build/facecheck ./res/target ./debug            # which faces in the debug frames would match
 ./build/facecheck ./res/target photo.jpg --out ./checked
+./build/facecheck ./res/target --strict           # fails on an unusable photo (part of the pre-install check)
 ```
 
 All photos should be similar to each other with at least 0.363 (OpenCV's SFace
@@ -92,7 +93,9 @@ code/src/ml/          PersonDetection (a person in frame pixels), FaceRecognizer
 code/src/tracking/    TargetTracker (who to follow: tracks everyone, accumulates face/clothing
                       evidence, picks and keeps the target), CameraGeometry
 code/src/tricks/      FollowPerson (the walking), Explore (roaming), TurnToPerson, SitStandApproach
-code/tools/           facecheck (check photos), trackertest (self-test of the tracking logic)
+code/tools/           facecheck (check photos), mapbench (times the route planner)
+code/tests/           the tests that must pass before installing: unit tests, the robot code in a
+                      simulated world, the programs as a whole (code/scripts/pre-install-check.sh)
 code/res/             models: movenet-multipose.tflite, face_detection_yunet_2022mar.onnx, face_recognition_sface_2021dec.onnx
 ```
 
@@ -110,5 +113,21 @@ The recognition code only needs OpenCV, so the offline tools also build on a lap
 ```
 cmake -S code -B build-tools -DFOLLOW_TOOLS_ONLY=ON
 cmake --build build-tools
-cd code && ../build-tools/trackertest      # self-test, needs ./res for the face models
 ```
+
+## Before installing on the robot
+
+Run the checks on the laptop, and again in the Jetson devcontainer before running the
+app there:
+
+```
+code/scripts/pre-install-check.sh
+```
+
+It ends with `OK TO INSTALL` (exit code 0), or says what failed. It covers three things:
+- **Tests**: unit tests, then the robot code driven by a simulated robot (remote
+  priority, stopping on sensor failures, stairs, handing control back, following).
+- **App build**: in the devcontainer it also builds the app.
+- **Photos**: it checks the photos in `code/res/target`.
+
+Details in [code/README.md](code/README.md#tests-before-installing-on-the-robot).

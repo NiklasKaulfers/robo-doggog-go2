@@ -1,6 +1,7 @@
 #ifndef FOLLOW_CAMERAGEOMETRY_H
 #define FOLLOW_CAMERAGEOMETRY_H
 
+#include <algorithm>
 #include <cmath>
 #include "opencv2/core.hpp"
 
@@ -33,8 +34,12 @@ struct CameraGeometry {
     }
 
     // horizontal pixel shift of everything in view when the robot turns by yawChange
+    // (radians, counter-clockwise = left positive like pose.yaw). Something standing still
+    // at world bearing b is seen at angle() = b - yaw, i.e. at image x = (0.5 - (b - yaw) / FOV) * width.
+    // Turning left (yaw grows) therefore moves it toward +x (right in the image): the
+    // shift is +yawChange / FOV * width
     static float pixelShift(float yawChange, int frameWidth) {
-        return -yawChange / FOV * frameWidth;
+        return yawChange / FOV * frameWidth;
     }
 
     static float wrapAngle(float a) {
