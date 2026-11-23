@@ -133,15 +133,17 @@ namespace robo::sdk::core
 
     bool Control::standup()
     {
-        bool ret = true;
-        ret &= client.RecoveryStand();
-        ret &= client.BalanceStand();
-        ret &= client.FreeWalk();
-        return ret;
+        // the SportClient returns 0 on success, an error code otherwise. All three are
+        // sent even when one fails
+        bool ok = true;
+        ok &= client.RecoveryStand() == 0;
+        ok &= client.BalanceStand() == 0;
+        ok &= client.FreeWalk() == 0;
+        return ok;
     }
 
     bool Control::sitdown() {
-        return client.Sit();
+        return client.Sit() == 0;
     }
 
     bool Control::stopMovement()

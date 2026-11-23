@@ -36,7 +36,11 @@ public:
         float size = 0;
         // detector score, 0..1
         float quality = 0;
-        // cosine similarity to the closest gallery face, -1 if the gallery is empty
+        // whether the face was compared with the gallery; not when the gallery is empty or
+        // the face is too small. similarity and verdict only say something when it was
+        bool compared = false;
+        // cosine similarity to the closest gallery face (-1..1, different people can score
+        // below 0), -1 if not compared
         float similarity = -1;
         Verdict verdict = Verdict::Unknown;
         // the SFace embedding, for learning
@@ -57,6 +61,9 @@ public:
     static constexpr float MISMATCH_THRESHOLD = 0.15f;
     // a match this good is taken as certain
     static constexpr float STRONG_MATCH = 0.5f;
+    // a reference photo whose face is this dissimilar to all other photos is probably not
+    // the same person; it is kept, but a warning is printed (facecheck --strict fails)
+    static constexpr float REFERENCE_OUTLIER = 0.25f;
 
     // smaller faces (frame pixels) are not recognized
     static constexpr float MIN_FACE_SIZE = 20;
@@ -89,7 +96,8 @@ public:
     static float cosine(const cv::Mat& a, const cv::Mat& b);
     // how similar a feature is to the closest gallery face, -1 if the gallery is empty
     float similarity(const cv::Mat& feature) const;
-    // the verdict for a face of this size and similarity
+    // the verdict for a face of this size whose similarity to the gallery is similarity
+    // (the face was compared, an empty gallery has no verdict)
     static Verdict verdict(float similarity, float faceSize);
 
 private:

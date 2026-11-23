@@ -86,7 +86,8 @@ public:
 
 private:
 
-    // tools/trackertest looks at and sets the per-person evidence, faces can't be drawn
+    // the tests (tests/support/TargetTrackerProbe.h) look at and set the per-person
+    // evidence, faces can't be drawn
     friend struct TargetTrackerProbe;
 
     // one person followed from frame to frame

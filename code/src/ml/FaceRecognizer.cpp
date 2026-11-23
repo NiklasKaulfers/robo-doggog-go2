@@ -24,9 +24,6 @@ static constexpr int MAX_CROP_SIDE = 320;
 static constexpr int MAX_PHOTO_SIZE = 1280;
 // faces smaller than this in a reference photo are too blurry to serve as a reference
 static constexpr float MIN_REFERENCE_FACE = 40;
-// reference photos whose face is this dissimilar to all other photos are probably not
-// the same person; they are kept, but a warning is printed
-static constexpr float REFERENCE_OUTLIER = 0.25f;
 // live-learned faces: how many are kept, and how different a new one has to be from
 // those to be worth keeping (otherwise the newest one just replaces the near-identical)
 static constexpr size_t MAX_LEARNED = 8;
@@ -188,7 +185,10 @@ FaceRecognizer::Observation FaceRecognizer::describe(const cv::Mat& image, const
     obs.quality = face.at<float>(0, 14);
     if (obs.size < MIN_FACE_SIZE) return obs;
 
+    // the feature is also needed without a gallery: it is what gets learned then
     obs.feature = feature(image, face);
+    if (gallerySize() == 0) return obs;
+    obs.compared = true;
     obs.similarity = similarity(obs.feature);
     obs.verdict = verdict(obs.similarity, obs.size);
     return obs;
@@ -209,7 +209,8 @@ float FaceRecognizer::similarity(const cv::Mat& feature) const {
 }
 
 FaceRecognizer::Verdict FaceRecognizer::verdict(float similarity, float faceSize) {
-    if (similarity < 0 || faceSize < MIN_FACE_SIZE) return Verdict::Unknown;
+    // a negative similarity is not "unknown": different people often score around 0
+    if (faceSize < MIN_FACE_SIZE) return Verdict::Unknown;
     if (similarity >= MATCH_THRESHOLD) return Verdict::Match;
     if (similarity < MISMATCH_THRESHOLD && faceSize >= MIN_MISMATCH_FACE_SIZE) return Verdict::Mismatch;
     return Verdict::Unknown;

@@ -54,7 +54,8 @@ This file describes what the code does and how it is put together.
 | `src/ml/` | Perception, no robot dependencies except the MoveNet wrapper. **`PersonDetection`** is the only type shared between detector and recognition code. **`FaceRecognizer`** (YuNet + SFace, OpenCV DNN) holds a gallery of known faces and returns match / mismatch / unknown. **`Appearance`** describes clothes as histograms and keeps a set of views (anchor views learned while the face matched are never forgotten). **`movenet/`** runs the pose models through LiteRT. |
 | `src/tracking/` | **`TargetTracker`** is the decision maker: it associates detections to tracks, accumulates face and clothing evidence, picks and keeps the target, drops it when clothes or face contradict, takes it over when a face matches someone else, and predicts where a lost person went (in the odometry frame). **`CameraGeometry.h`** converts pixels to angle and distance. |
 | `src/tricks/` | Behaviours built on `Control`. **`FollowPerson`** is the real application. **`Explore`** roams to new spots. **`TurnToPerson`** and **`SitStandApproach`** are earlier experiments (gesture and turn demos), kept but not used by `main`. |
-| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`trackertest`** (self-test of the tracking logic with drawn people) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
+| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos; `--strict` fails on a bad photo) and **`mapbench`** (times the route planner on synthetic height maps). |
+| `tests/` | The tests that must pass before the code is installed on the robot, see [Tests](#tests-before-installing-on-the-robot). |
 | `res/` | Models: `face_detection_yunet_2022mar.onnx`, `face_recognition_sface_2021dec.onnx`, `movenet-multipose.tflite`, `movenet-singlepose.tflite`. `res/target/` (git-ignored) holds the reference photos. |
 
 ### Dependency split
@@ -65,7 +66,7 @@ The CMake project builds two parts:
   `CameraGeometry`, `PersonDetection`. Needs only OpenCV, so it is shared by the app
   and the offline tools and can be built on a laptop with `-DFOLLOW_TOOLS_ONLY=ON`.
 - **`navigation`** (static library): `ObstacleMap`. Needs only the standard library,
-  also built with `-DFOLLOW_TOOLS_ONLY=ON` and tested by `maptest`.
+  also built with `-DFOLLOW_TOOLS_ONLY=ON`.
 - **`app`**: everything else, including `ObstacleMapSubscriber` (the DDS side of the map). Needs the Unitree SDK 2 (`../sdk/install`) and LiteRT
   (`../sdk/litert`), which exist only in the Jetson devcontainer.
 
@@ -119,8 +120,80 @@ On a laptop with only OpenCV (offline tools):
 ```
 cmake -S . -B build-tools -DFOLLOW_TOOLS_ONLY=ON
 cmake --build build-tools
-./build-tools/trackertest     # run from this folder, needs ./res
-./build-tools/maptest         # needs nothing, exit code 0 when all checks pass
+./build-tools/facecheck ./res/target   # run from this folder, needs ./res
+./build-tools/mapbench                 # needs nothing
 ```
 
-Binaries: `app` (robot), `facecheck`, `trackertest`, `maptest`.
+Binaries: `app` (robot), `facecheck`, `mapbench`.
+
+## Tests (before installing on the robot)
+
+One command decides whether the code may go onto the robot. Run it on the laptop and
+again in the Jetson devcontainer; exit code 0 (and `OK TO INSTALL`) means go:
+
+```
+scripts/pre-install-check.sh
+```
+
+It builds the tests into `build-check/` with sanitizers and runs them. In the
+devcontainer (Linux on aarch64) it also builds the real app in `build/`. When there are
+photos in `res/target`, it checks them with `facecheck --strict`, which needs the
+devcontainer's OpenCV. From scratch it takes about a minute on a recent laptop (the
+simulation tests run in real time), longer on the Jetson.
+
+| Suite (ctest label) | What it covers | Where |
+| --- | --- | --- |
+| `unit` | `CameraGeometry`, `Appearance`, `FaceRecognizer` (without models), `ObstacleMap` (with a fake clock and synthetic height maps), `TargetTracker` (with drawn people). Deterministic, about 170 cases. | `tests/unit/` |
+| `sim` | The robot code (`Control`, `ObstacleMapSubscriber`, `FollowPerson`, `Explore`, the MoveNet wrappers) compiled unchanged against fakes of the Unitree SDK and LiteRT, driven by a simulated world. | `tests/sim/` |
+| `cli` | The programs as a whole: `main()` of the app (`app_sim`) and `facecheck`, checked by exit code and output. | `tests/sim/CMakeLists.txt` |
+| `known` | Scenarios the code doesn't handle yet. Not part of the check, run them with `ctest -L known`. | `tests/sim/test_known_issues.cpp` |
+
+**The simulated robot.** `tests/sim/fake_sdk/` has fakes of the SDK headers the app
+uses, at the same include paths. Every call is recorded on `fakesdk::Bus`, results can
+be scripted (0 = success, like the SDK), and DDS messages are delivered to the app's
+subscribers. `SimWorld` plays the robot and its surroundings in real time:
+- it moves with the velocity the obstacle avoidance service last accepted;
+- people walk, and boxes are walls or steps;
+- it publishes the robot state, the LiDAR height map and the remote;
+- the camera draws the people it sees, and the LiteRT stub returns them as MoveNet output.
+
+Every scenario checks the rules from `Agents.md` (`tests/sim/SafetyRules.h`):
+- only the avoidance service moves the robot, within the speed limits, while it listens to the API;
+- no SportClient gait or speed calls, and avoidance is never switched off;
+- the robot never touches an obstacle or a person.
+
+The scenarios cover:
+- the remote taking over;
+- lost robot state, camera, detector or height map;
+- stairs;
+- Ctrl+C handing control back;
+- the explore combo;
+- following, detours, searching for a lost person, and not following a stranger.
+
+It does not cover:
+- real DDS timing;
+- the real avoidance service;
+- the accuracy of the models;
+- the physics of stairs.
+
+These stay for supervised trials on the robot.
+
+Running parts of it from `build-check/`:
+
+```
+ctest --test-dir build-check -L unit             # one suite
+ctest --test-dir build-check -R "remote"         # tests whose name matches
+./build-check/tests/sim/test_safety -s           # one executable, doctest options (-s, -tc="name*")
+```
+
+**Machine notes.**
+- AddressSanitizer deadlocks at startup on current macOS, so the check uses only UBSan
+  there; the devcontainer runs both.
+- The face detector model (YuNet 2022mar) doesn't run on OpenCV 5, so the face tests use
+  no models and the photo check runs in the devcontainer.
+
+**New tests.**
+- Unit tests: one executable per unit in `tests/unit/`, registered in `tests/CMakeLists.txt`.
+- Scenarios: `tests/sim/`, using `SimRun` and ending with `checkSafetyRules(run.world)`.
+- Test helpers: `tests/support/`.
+- Framework: doctest 2.4.12, vendored in `tests/third_party/doctest/`.

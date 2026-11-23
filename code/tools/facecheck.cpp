@@ -3,10 +3,14 @@
 // recognition over further images (e.g. debug frames saved by the app) to see which
 // faces would be taken as the person. Needs only OpenCV, so it also runs on a laptop.
 //
-//   facecheck <photos-folder> [--res DIR] [--out DIR] [image-or-folder ...]
+//   facecheck <photos-folder> [--res DIR] [--out DIR] [--strict] [image-or-folder ...]
 //
 // --res DIR  folder with the .onnx models (default ./res)
 // --out DIR  write every test image with the faces and similarities drawn in to DIR
+// --strict   fail (exit code 2) if a photo has no usable face or looks like none of the
+//            other photos; scripts/pre-install-check.sh uses this on ./res/target
+//
+// Exit codes: 0 ok, 1 no usable photos or models, 2 --strict found a bad photo.
 
 #include <algorithm>
 #include <filesystem>
@@ -36,16 +40,18 @@ static const char* verdictName(FaceRecognizer::Verdict v) {
 
 int main(int argc, char** argv) {
     std::string photos, resourceDir = "./res", outDir;
+    bool strict = false;
     std::vector<std::filesystem::path> tests;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
         if (arg == "--res" && i + 1 < argc) resourceDir = argv[++i];
         else if (arg == "--out" && i + 1 < argc) outDir = argv[++i];
+        else if (arg == "--strict") strict = true;
         else if (photos.empty()) photos = arg;
         else tests.emplace_back(arg);
     }
     if (photos.empty()) {
-        std::cerr << "usage: facecheck <photos-folder> [--res DIR] [--out DIR] [image-or-folder ...]" << std::endl;
+        std::cerr << "usage: facecheck <photos-folder> [--res DIR] [--out DIR] [--strict] [image-or-folder ...]" << std::endl;
         return 1;
     }
 
@@ -79,6 +85,26 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --strict: every photo must be usable by the app as it is (before installing it)
+    int status = 0;
+    if (strict) {
+        int images = 0;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(photos, error))
+            if (isImage(entry.path())) images++;
+        const int unusable = images - static_cast<int>(refs.size());
+        int outliers = 0;
+        for (size_t i = 0; refs.size() > 1 && i < refs.size(); i++) {
+            float closest = -1;
+            for (size_t j = 0; j < refs.size(); j++)
+                if (i != j) closest = std::max(closest, FaceRecognizer::cosine(refs[i].feature, refs[j].feature));
+            if (closest < FaceRecognizer::REFERENCE_OUTLIER) outliers++;
+        }
+        std::cout << "\nstrict check: " << unusable << " photo(s) without a usable face, " << outliers
+                  << " photo(s) like none of the others (below " << FaceRecognizer::REFERENCE_OUTLIER << ")" << std::endl;
+        if (unusable > 0 || outliers > 0) status = 2;
+    }
+
     // test images: every face with its similarity to the photos
     std::vector<std::filesystem::path> images;
     for (const auto& test : tests) {
@@ -91,7 +117,7 @@ int main(int argc, char** argv) {
         }
     }
     std::sort(images.begin(), images.end());
-    if (images.empty()) return 0;
+    if (images.empty()) return status;
 
     if (!outDir.empty()) std::filesystem::create_directories(outDir);
     std::cout << "\ntest images:" << std::endl;
@@ -117,5 +143,5 @@ int main(int argc, char** argv) {
         }
         if (!outDir.empty()) cv::imwrite((std::filesystem::path(outDir) / file.filename()).string(), image);
     }
-    return 0;
+    return status;
 }

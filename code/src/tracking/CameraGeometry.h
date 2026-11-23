@@ -1,6 +1,7 @@
 #ifndef FOLLOW_CAMERAGEOMETRY_H
 #define FOLLOW_CAMERAGEOMETRY_H
 
+#include <algorithm>
 #include <cmath>
 #include "opencv2/core.hpp"
 

@@ -9,6 +9,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
+# test builds only: build everything with these sanitizers, e.g. "address,undefined"
+# (see scripts/pre-install-check.sh). Any finding aborts the test that triggered it
+set(FOLLOW_SANITIZE "" CACHE STRING "sanitizers for test builds, e.g. address,undefined")
+if (FOLLOW_SANITIZE)
+    add_compile_options(-fsanitize=${FOLLOW_SANITIZE} -fno-omit-frame-pointer -fno-sanitize-recover=all)
+    add_link_options(-fsanitize=${FOLLOW_SANITIZE})
+endif ()
+
 # recognition code that only needs OpenCV, shared by the app and the offline tools
 add_library(recognition STATIC
         src/ml/PersonDetection.h
@@ -33,14 +41,19 @@ add_library(navigation STATIC
 add_executable(facecheck tools/facecheck.cpp)
 target_link_libraries(facecheck recognition ${OpenCV_LIBS})
 
-# self-test of the tracking logic with drawn people, runs without the robot
-add_executable(trackertest tools/trackertest.cpp)
-target_link_libraries(trackertest recognition ${OpenCV_LIBS})
+# times the route planning with synthetic height maps, needs neither the robot nor the models
+add_executable(mapbench tools/mapbench.cpp)
+target_link_libraries(mapbench navigation)
 
-# self-test of the obstacle map and route planning with synthetic height maps, needs
-# neither the robot nor the models
-add_executable(maptest tools/maptest.cpp)
-target_link_libraries(maptest navigation)
+# unit, simulation and command line tests that must pass before the code is installed on
+# the robot, run them with ctest or scripts/pre-install-check.sh. They need neither the
+# robot, nor the Unitree SDK, nor LiteRT: the robot code is tested against fakes of those.
+# Added before the app so the tests don't inherit its -fpermissive and LiteRT includes
+option(FOLLOW_TESTS "build the tests (run them with ctest)" OFF)
+if (FOLLOW_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif ()
 
 # the robot app needs the Unitree SDK and LiteRT, which only exist on the Go2's Jetson.
 # Set FOLLOW_TOOLS_ONLY=ON to build just the offline tools elsewhere

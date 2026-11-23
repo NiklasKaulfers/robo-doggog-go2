@@ -337,7 +337,8 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
 
     for (auto& t : tracks) {
         const auto& face = t.face;
-        if (!t.matched || !face.found || face.similarity < 0) {
+        // no face, or one that couldn't be compared (too small, nothing to compare with)
+        if (!t.matched || !face.found || !face.compared) {
             t.faceEvidence *= EVIDENCE_DECAY;
             continue;
         }
