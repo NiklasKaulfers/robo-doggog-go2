@@ -86,6 +86,9 @@ public:
 
 private:
 
+    // tools/trackertest looks at and sets the per-person evidence, faces can't be drawn
+    friend struct TargetTrackerProbe;
+
     // one person followed from frame to frame
     struct Track {
         int id = 0;
@@ -113,6 +116,9 @@ private:
         // the target chosen without any way to recognize them (no photos, nothing
         // learned yet): the person's identity is defined by this track
         bool defining = false;
+        // dropped as the target because their face is someone else's: never chosen again
+        // by clothes or position, only their face matching brings them back
+        bool excluded = false;
 
         ml::Appearance::Signature signature;
         float clothingSimilarity = -1;

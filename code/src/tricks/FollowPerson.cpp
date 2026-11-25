@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -54,11 +55,17 @@ static constexpr float SEARCH_TURN_SPEED = 0.4f;
 static constexpr float SEARCH_TIMEOUT = 10.0f;
 // how often a debug frame is written
 static constexpr auto DEBUG_FRAME_INTERVAL = std::chrono::milliseconds(1000);
+// watchdogs (s): odometry older than this stops the robot; a height map older than this
+// isn't trusted for obstacles, so the robot only turns toward the person
+static constexpr float STATE_TIMEOUT = 0.5f;
+static constexpr float MAP_STALE_SECONDS = 1.0f;
+// fixed period of the run loop; the sample counts above (e.g. 3 samples = 0.3 s) assume it
+static constexpr auto LOOP_PERIOD = std::chrono::milliseconds(100);
 
 FollowPerson::FollowPerson(core::Control& control, std::string targetImages, std::string debugDir)
     : roboControl(control), targetImages(std::move(targetImages)), debugDir(std::move(debugDir)) {
     videoClient.Init();
-    obstacleMap.init();
+    mapSubscriber.init();
 }
 
 void FollowPerson::run() {
@@ -120,12 +127,29 @@ void FollowPerson::runWithMultipose() {
 
     std::vector<PersonDetection> detections;
     int stairSamples = 0;
-    float levelHeight = roboControl.positionZ();
+    // set from the first robot state message: before it positionZ() is 0, which would
+    // look like a height change and trigger stair mode
+    float levelHeight = 0;
+    bool levelHeightValid = false;
+    auto nextTick = std::chrono::steady_clock::now();
+    // sensor failures are logged once when they start and once when they end
+    bool stateStale = false;
+    bool cameraFailed = false;
+    bool mapStale = false;
 
     while (!core::Control::stopRequested) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // fixed period: sleep only the rest of it. A tick that overran resyncs instead of
+        // running a burst of catch-up ticks
+        nextTick += LOOP_PERIOD;
+        const auto tickStart = std::chrono::steady_clock::now();
+        if (nextTick > tickStart) std::this_thread::sleep_until(nextTick);
+        else nextTick = tickStart;
 
-        updateStairMode(stairSamples, levelHeight);
+        if (!levelHeightValid && std::isfinite(roboControl.stateAge())) {
+            levelHeight = roboControl.positionZ();
+            levelHeightValid = true;
+        }
+        if (levelHeightValid) updateStairMode(stairSamples, levelHeight);
 
         if (roboControl.exploreComboPressed()) {
             exploring = !exploring;
@@ -147,6 +171,18 @@ void FollowPerson::runWithMultipose() {
             continue;
         }
 
+        // odometry watchdog: without fresh pose and IMU data nothing below can be trusted
+        const bool stateOld = roboControl.stateAge() > STATE_TIMEOUT;
+        if (stateOld != stateStale) {
+            stateStale = stateOld;
+            if (stateStale) std::cerr << "[FollowPerson] no fresh robot state, stopping" << std::endl;
+            else std::cout << "[FollowPerson] robot state is updating again" << std::endl;
+        }
+        if (stateStale) {
+            stop();
+            continue;
+        }
+
         // roams until the explore combo is pressed again
         if (exploring) {
             float x, z;
@@ -155,10 +191,21 @@ void FollowPerson::runWithMultipose() {
             continue;
         }
 
-        videoClient.GetImageSample(imgData);
-        if (!detector.run(imgData)) {
-            std::cerr << "[FollowPerson] error in detector.run()" << std::endl;
+        // camera or detector failure: stop instead of walking on with the last command
+        const int32_t imageStatus = videoClient.GetImageSample(imgData);
+        const bool imageOk = imageStatus == 0 && !imgData.empty();
+        if (!imageOk || !detector.run(imgData)) {
+            if (!cameraFailed) {
+                if (!imageOk) std::cerr << "[FollowPerson] no camera image (status " << imageStatus << "), stopping" << std::endl;
+                else std::cerr << "[FollowPerson] error in detector.run(), stopping" << std::endl;
+            }
+            cameraFailed = true;
+            stop();
             continue;
+        }
+        if (cameraFailed) {
+            std::cout << "[FollowPerson] camera and detector working again" << std::endl;
+            cameraFailed = false;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -175,7 +222,8 @@ void FollowPerson::runWithMultipose() {
             distance = CameraGeometry::distance(target.target.box, frame.cols);
             personAngle = CameraGeometry::angle(target.target.box, frame.cols);
         } else if (target.state == TargetTracker::State::Searching) {
-            // nobody to follow (yet): wait where we are
+            // nobody to follow (yet): wait where we are. A later Lost phase starts roaming fresh
+            roamSearching = false;
             stop();
             continue;
         } else {
@@ -204,13 +252,35 @@ void FollowPerson::runWithMultipose() {
         // (x: move toward the person if too far, away if too close)
         float x = std::clamp(0.5f * (distance - TARGET_DISTANCE), -0.6f, +0.6f);
 
+        // a height map that stopped updating is treated as no map: its obstacles can't be
+        // trusted, so don't walk forward on it. INFINITY = never received
+        const float mapAge = obstacleMap.secondsSinceUpdate();
+        const bool mapOld = std::isfinite(mapAge) && mapAge > MAP_STALE_SECONDS;
+        if (mapOld != mapStale) {
+            mapStale = mapOld;
+            if (mapStale) std::cerr << "[FollowPerson] height map is stale, only turning" << std::endl;
+            else std::cout << "[FollowPerson] height map is updating again" << std::endl;
+        }
+
         // when walking toward the person, take a detour around obstacles in the way
         float heading = personAngle;
-        if (x > 0) {
+        if (x > 0 && mapStale) {
+            x = 0;
+        } else if (x > 0) {
             float clearance = 0;
-            heading = planHeading(personAngle, distance, clearance);
+            heading = CameraGeometry::wrapAngle(planHeading(personAngle, distance, clearance));
+            // x drives the body along its current yaw, not along the planned heading, so the
+            // room straight ahead limits it as well. That ray ends PERSON_MARGIN before the
+            // person (same as planHeading), so their legs don't count as an obstacle
+            const float needed = std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD);
+            if (obstacleMap.available() && needed > 0) {
+                const float ahead = obstacleMap.freeDistance(pose.x, pose.y, pose.yaw, needed);
+                clearance = std::min(clearance, ahead >= needed ? PLAN_LOOKAHEAD : ahead);
+            }
             // slow down in front of obstacles and only turn if nothing is free
             x = std::min(x, std::max(0.0f, 0.5f * (clearance - MIN_CLEARANCE)));
+            // turn onto the detour before walking along it
+            x *= std::max(0.0f, std::cos(heading));
         }
 
         // z: rotate toward the chosen heading, proportional to how far off it is.
@@ -226,6 +296,8 @@ void FollowPerson::runWithMultipose() {
 
         drive(x, z);
     }
+    // leaving the loop: don't leave the last command running
+    stop();
 }
 
 void FollowPerson::saveDebugFrame(const cv::Mat& frame, std::chrono::steady_clock::time_point now) {
@@ -294,8 +366,8 @@ void FollowPerson::updateStairMode(int& stairSamples, float& levelHeight) {
 void FollowPerson::stop() {
     // only send the stop once, repeating it would block the remote controller
     if (!moving) return;
-    roboControl.stopMovement();
-    moving = false;
+    // keep `moving` set when the stop failed so the next tick retries
+    if (roboControl.stopMovement()) moving = false;
 }
 
 float FollowPerson::planHeading(float personAngle, float distance, float& clearance) {
@@ -338,7 +410,7 @@ float FollowPerson::planHeading(float personAngle, float distance, float& cleara
     float bestFree = -1;
     for (int i = 0; i <= 2 * DETOUR_STEPS; i++) {
         const int k = (i + 1) / 2 * (i % 2 ? lastDetourSide : -lastDetourSide);
-        const float heading = personAngle + k * DETOUR_STEP;
+        const float heading = CameraGeometry::wrapAngle(personAngle + k * DETOUR_STEP);
         const float free = obstacleMap.freeDistance(x, y, yaw + heading, needed);
 
         if (free >= needed) {

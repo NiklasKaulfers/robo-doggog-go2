@@ -1,6 +1,9 @@
 #include "Control.h"
 
 #include <cmath>
+#include <iostream>
+#include <string>
+#include <vector>
 
 #define TOPIC_HIGHSTATE "rt/sportmodestate"
 #define TOPIC_CONTROLLER "rt/wirelesscontroller"
@@ -69,6 +72,15 @@ namespace robo::sdk::core
     {
         std::lock_guard<std::mutex> lock(stateMutex);
         state = *static_cast<const unitree_go::msg::dds_::SportModeState_*>(message);
+        lastStateTime = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+
+    float Control::stateAge() const
+    {
+        const auto last = lastStateTime.load();
+        if (last == 0) return INFINITY;
+        const std::chrono::steady_clock::time_point time {std::chrono::steady_clock::duration(last)};
+        return std::chrono::duration<float>(std::chrono::steady_clock::now() - time).count();
     }
 
     void Control::updateController(const void* message)
@@ -106,7 +118,9 @@ namespace robo::sdk::core
         std::cout << "Control status:" << std::endl;
         std::cout << "  position: " << state.position()[0] << ", " << state.position()[1] << ", " << state.position()[2] << std::endl;
         std::cout << "  temperature: " << static_cast<uint32_t>(state.imu_state().temperature()) << std::endl;
-        std::cout << "  mode: " << FSM_STATE_STR[int(state.mode())] << std::endl;
+        // the firmware may report modes newer than this table
+        const int mode = int(state.mode());
+        std::cout << "  mode: " << (mode >= 0 && mode < int(FSM_STATE_STR.size()) ? FSM_STATE_STR[mode] : "UNKNOWN (" + std::to_string(mode) + ")") << std::endl;
         std::cout << "  progress: " << state.progress() << std::endl;
         std::cout << "  errorCode: " << state.error_code() << std::endl;
         std::cout << std::endl << std::flush;
@@ -130,9 +144,18 @@ namespace robo::sdk::core
         return client.Sit();
     }
 
-    void Control::stopMovement()
+    bool Control::stopMovement()
     {
-        if (apiControl) avoidClient.Move(0.0f, 0.0f, 0.0f);
+        if (!apiControl) return true;
+        if (avoidClient.Move(0.0f, 0.0f, 0.0f) == 0) {
+            stopFailureLogged = false;
+            return true;
+        }
+        if (!stopFailureLogged) {
+            std::cerr << "[Control] stop command failed, retrying" << std::endl;
+            stopFailureLogged = true;
+        }
+        return false;
     }
 
     void Control::rotateLeft(float speed)

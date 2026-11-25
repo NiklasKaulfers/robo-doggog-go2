@@ -92,7 +92,7 @@ code/src/ml/          PersonDetection (a person in frame pixels), FaceRecognizer
 code/src/tracking/    TargetTracker (who to follow: tracks everyone, accumulates face/clothing
                       evidence, picks and keeps the target), CameraGeometry
 code/src/tricks/      FollowPerson (the walking), Explore (roaming), TurnToPerson, SitStandApproach
-code/tools/           facecheck (check photos), trackertest (self-test of the tracking logic)
+code/tools/           facecheck (check photos), trackertest, appearancetest, maptest, exploretest (offline self-tests)
 code/res/             models: movenet-multipose.tflite, face_detection_yunet_2022mar.onnx, face_recognition_sface_2021dec.onnx
 ```
 

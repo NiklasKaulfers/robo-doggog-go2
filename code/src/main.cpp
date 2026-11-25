@@ -1,7 +1,9 @@
+#include <chrono>
 #include <csignal>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "core/Control.h"
 #include "tricks/TurnToPerson.h"
@@ -68,11 +70,14 @@ int main(int argc, char** argv)
 
     Control control;
     control.init();
-    sleep(1);
+    // give the state subscription time to receive a first message
+    std::this_thread::sleep_for(std::chrono::seconds(1));
 
     control.printStatus();
     if (!control.standup()) {
-        std::cout << "error in standup" << std::endl;
+        // fail-safe: don't start following a robot that isn't standing
+        std::cerr << "error in standup" << std::endl;
+        return 1;
     }
     control.printStatus();
 

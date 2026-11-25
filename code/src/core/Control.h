@@ -18,6 +18,8 @@ class Control
     unitree_go::msg::dds_::SportModeState_ state;
     // state is written by the DDS thread and read by the trick loop
     mutable std::mutex stateMutex;
+    // arrival time of the last SportModeState, in steady_clock ticks, 0 = none yet
+    std::atomic<std::chrono::steady_clock::rep> lastStateTime {0};
 
     unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::WirelessController_> subController;
     // last time a stick was moved or a button pressed on the remote, in steady_clock ticks
@@ -32,6 +34,8 @@ class Control
     unitree::robot::go2::ObstaclesAvoidClient avoidClient;
     // whether the avoidance service currently takes its commands from us instead of the remote
     bool apiControl = false;
+    // a failed stop is logged once, not on every retry
+    bool stopFailureLogged = false;
 
 public:
 
@@ -47,7 +51,8 @@ public:
     void hello();
     bool standup();
     bool sitdown();
-    void stopMovement();
+    // true when no stop was needed or it was sent; false means the caller must retry
+    bool stopMovement();
     void rotateLeft(float speed);
     void rotateRight(float speed);
     void moveForwardBackward(float speed);
@@ -65,6 +70,9 @@ public:
     float positionX() const;
     float positionY() const;
     float yaw() const;
+    // seconds since the last SportModeState arrived, INFINITY before the first one.
+    // Everything above is stale once this grows, tricks must stop then
+    float stateAge() const;
 
     // true while someone is using the remote controller; tricks must not send
     // movement commands then, or they overwrite the controller's input
