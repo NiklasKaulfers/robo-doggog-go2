@@ -1,20 +1,28 @@
 #include <chrono>
 #include <csignal>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <memory>
 #include <thread>
 
 #include "core/Control.h"
+#include "logging/Logger.h"
 #include "tricks/TurnToPerson.h"
 #include "tricks/SitStandApproach.h"
 #include "tricks/FollowPerson.h"
 
 using namespace robo::sdk;
 using namespace robo::sdk::core;
+namespace logging = robo::sdk::logging;
+
+// the log store keeps at most this much by default (MB), see --log-max-mb
+static constexpr long DEFAULT_LOG_MAX_MB = 256;
 
 static void usage(const char* program) {
-    std::cout << "usage: " << program << " [photos-folder] [--target DIR] [--debug DIR]\n"
+    std::cout << "usage: " << program << " [photos-folder] [--target DIR] [--debug DIR] [--log-db FILE] [--log-max-mb N]\n"
               << "\n"
               << "  photos-folder, --target DIR  photos (jpg/png) of the person to follow. Only the\n"
               << "                               person whose face matches them is followed. Defaults\n"
@@ -24,13 +32,31 @@ static void usage(const char* program) {
               << "  --debug DIR                  write an annotated camera frame per second to DIR\n"
               << "                               (tracks, faces, clothing regions, similarities)\n"
               << "  --no-target                  ignore ./res/target, follow the first person seen\n"
+              << "  --log-db FILE                where the log is saved until it is uploaded\n"
+              << "                               (default logs/robo.db). The dog's id in it is\n"
+              << "                               ROBO_DEVICE_ID, or the hostname if that is unset\n"
+              << "  --log-max-mb N               the log file is kept below about N MB, uploaded\n"
+              << "                               records are deleted first (default " << DEFAULT_LOG_MAX_MB << ")\n"
               << std::endl;
 }
+
+// the log is saved on every way out of main: declared before the robot objects, it is
+// destroyed after them, so what they log while shutting down is saved too
+struct LogSession {
+    std::shared_ptr<logging::Logger> logger;
+    ~LogSession() {
+        logging::clearDefaultLogger();
+        // the destructor saves what is still queued
+        logger.reset();
+    }
+};
 
 int main(int argc, char** argv)
 {
     std::string targetImages;
     std::string debugDir;
+    std::string logDb = "logs/robo.db";
+    long logMaxMb = DEFAULT_LOG_MAX_MB;
     bool noTarget = false;
     for (int i = 1; i < argc; i++) {
         const std::string arg = argv[i];
@@ -41,6 +67,15 @@ int main(int argc, char** argv)
             targetImages = argv[++i];
         } else if (arg == "--debug" && i + 1 < argc) {
             debugDir = argv[++i];
+        } else if (arg == "--log-db" && i + 1 < argc) {
+            logDb = argv[++i];
+        } else if (arg == "--log-max-mb" && i + 1 < argc) {
+            char* end = nullptr;
+            logMaxMb = std::strtol(argv[++i], &end, 10);
+            if (*end != '\0' || logMaxMb <= 0) {
+                std::cerr << "--log-max-mb needs a positive number of MB" << std::endl;
+                return 1;
+            }
         } else if (arg == "--no-target") {
             noTarget = true;
         } else if (!arg.empty() && arg[0] != '-' && targetImages.empty()) {
@@ -60,7 +95,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::cout << "Start" << std::endl;
+    // everything the app logs goes to the console as before and into a local SQLite file
+    // that survives crashes and restarts, ready to be uploaded later. If the file can't be
+    // used the app runs anyway, logging to the console only
+    LogSession logSession;
+    {
+        logging::LoggerConfig cfg;
+        cfg.deviceId = logging::resolveDeviceId();
+        cfg.maxStoreBytes = static_cast<int64_t>(logMaxMb) * 1024 * 1024;
+        logSession.logger = std::make_shared<logging::Logger>(std::make_shared<logging::LogStore>(logDb), cfg);
+        logging::setDefaultLogger(logSession.logger);
+    }
+
+    logging::info("Main", "Start");
 
     // without this Ctrl+C would leave the avoidance service ignoring the remote controller
     std::signal(SIGINT, [](int) { Control::stopRequested = true; });
@@ -76,7 +123,7 @@ int main(int argc, char** argv)
     control.printStatus();
     if (!control.standup()) {
         // fail-safe: don't start following a robot that isn't standing
-        std::cerr << "error in standup" << std::endl;
+        logging::error("Main", "error in standup");
         return 1;
     }
     control.printStatus();

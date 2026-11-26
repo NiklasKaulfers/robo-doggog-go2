@@ -33,7 +33,7 @@ class FollowPlanner {
 public:
 
     using Clock = std::chrono::steady_clock;
-    // warning = something safety related (e.g. a stale height map), default: std::cerr
+    // warning = something safety related (e.g. a stale height map), logged as a warning
     using Logger = std::function<void(const std::string& message, bool warning)>;
 
     enum class Phase { WaitingForTarget, Following, Pursue, LookAround, Sweep, GaveUp };
@@ -55,7 +55,8 @@ public:
     bool init(const std::string& resourceDir = "./res");
     // only the person in the photos is followed; false if no face was found in any
     bool loadReferencePhotos(const std::string& folder);
-    // log output, default prints "[Follow] ..." to std::cout, warnings to std::cerr
+    // log output, default: the process-wide log (component "Follow"), which prints
+    // "[Follow] ..." to std::cout, warnings to std::cerr
     void setLogger(Logger newLogger);
 
     // one camera frame: everyone the pose detector found in it, the frame (BGR), the

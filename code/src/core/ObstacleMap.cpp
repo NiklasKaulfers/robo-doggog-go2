@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <iostream>
 #include <queue>
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 // a height change larger than this between neighbouring cells can't be stepped over.
 // regular stair steps are ~0.15-0.18m, walls/furniture/people are much higher
@@ -136,10 +138,9 @@ namespace robo::sdk::core
         if (offset <= FRAME_MISMATCH_DISTANCE) return true;
         if (!frameWarned) {
             frameWarned = true;
-            std::cerr << "[ObstacleMap] height map is centered at " << frameCenterX << ", " << frameCenterY
-                      << " but the robot is at " << robotX << ", " << robotY << " (" << offset
-                      << "m apart): height map and odometry seem to use different frames, routes will be wrong"
-                      << std::endl;
+            logging::warn("ObstacleMap", logging::text("height map is centered at ", frameCenterX, ", ", frameCenterY, " but the robot is at ",
+                                                        robotX, ", ", robotY, " (", offset, "m apart): height map and odometry",
+                                                        " seem to use different frames, routes will be wrong"));
         }
         return false;
     }

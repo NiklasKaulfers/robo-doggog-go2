@@ -118,7 +118,8 @@ public:
 
     ExplorePlanner(ObstacleMap& map, uint32_t seed, Clock clock = {}, ExploreConfig cfg = {});
 
-    // log output, default prints "[Explore] ..." to std::cout
+    // log output, default: the process-wide log (logging::info, component "Explore"),
+    // which prints "[Explore] ..." to std::cout
     void setLogger(Logger newLogger);
     // forgets everything from a previous run: goal, trail, failed goals, timers, counters
     // and the search focus

@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
-#include <iostream>
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::ml;
 
@@ -41,7 +43,7 @@ bool FaceRecognizer::init(const std::string& resourceDir) {
         detector = cv::FaceDetectorYN::create(detectionModel, "", cv::Size(320, 320), DETECTION_SCORE, NMS_THRESHOLD);
         recognizer = cv::FaceRecognizerSF::create(recognitionModel, "");
     } catch (const cv::Exception& e) {
-        std::cerr << "[FaceRecognizer] unable to load the face models from " << resourceDir << ": " << e.what() << std::endl;
+        logging::error("FaceRecognizer", logging::text("unable to load the face models from ", resourceDir, ": ", e.what()));
         return false;
     }
     return true;
@@ -56,7 +58,7 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
         if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp") files.push_back(entry.path());
     }
     if (error) {
-        std::cerr << "[FaceRecognizer] could not open " << folder << ": " << error.message() << std::endl;
+        logging::error("FaceRecognizer", logging::text("could not open ", folder, ": ", error.message()));
         return 0;
     }
     std::sort(files.begin(), files.end());
@@ -66,7 +68,7 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
         // imread applies the EXIF orientation, so phone photos come out upright
         cv::Mat image = cv::imread(file.string(), cv::IMREAD_COLOR);
         if (image.empty()) {
-            std::cerr << "[FaceRecognizer] could not read " << file << std::endl;
+            logging::warn("FaceRecognizer", logging::text("could not read ", file));
             continue;
         }
         const double scale = static_cast<double>(MAX_PHOTO_SIZE) / std::max(image.cols, image.rows);
@@ -74,7 +76,7 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
 
         cv::Mat faces;
         if (!detect(image, faces) || faces.rows == 0) {
-            std::cerr << "[FaceRecognizer] no face found in " << file << std::endl;
+            logging::warn("FaceRecognizer", logging::text("no face found in ", file));
             continue;
         }
 
@@ -85,8 +87,7 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
         }
         const float size = std::min(faces.at<float>(best, 2), faces.at<float>(best, 3));
         if (size < MIN_REFERENCE_FACE) {
-            std::cerr << "[FaceRecognizer] the face in " << file << " is too small (" << size
-                      << " px), use a photo taken closer up" << std::endl;
+            logging::warn("FaceRecognizer", logging::text("the face in ", file, " is too small (", size, " px), use a photo taken closer up"));
             continue;
         }
 
@@ -95,8 +96,8 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
         ref.faceSize = size;
         ref.quality = faces.at<float>(best, 14);
         ref.feature = feature(image, faces.row(best));
-        std::cout << "[FaceRecognizer] enrolled " << ref.file << " (face " << static_cast<int>(size) << " px"
-                  << (faces.rows > 1 ? ", largest of " + std::to_string(faces.rows) + " faces" : "") << ")" << std::endl;
+        logging::info("FaceRecognizer", logging::text("enrolled ", ref.file, " (face ", static_cast<int>(size), " px",
+                                                     (faces.rows > 1 ? ", largest of " + std::to_string(faces.rows) + " faces" : ""), ")"));
         references.push_back(std::move(ref));
         enrolled++;
     }
@@ -109,9 +110,8 @@ int FaceRecognizer::enrollFolder(const std::string& folder) {
                 if (i != j) closest = std::max(closest, cosine(references[i].feature, references[j].feature));
             }
             if (closest < REFERENCE_OUTLIER)
-                std::cerr << "[FaceRecognizer] warning: the face in " << references[i].file
-                          << " looks different from all other photos (similarity " << closest
-                          << "), is it the same person?" << std::endl;
+                logging::warn("FaceRecognizer", logging::text("warning: the face in ", references[i].file, " looks different from all other photos",
+                                                               " (similarity ", closest, "), is it the same person?"));
         }
     }
     return enrolled;
@@ -221,7 +221,7 @@ bool FaceRecognizer::detect(const cv::Mat& image, cv::Mat& faces) {
         detector->detect(image, faces);
         return true;
     } catch (const cv::Exception& e) {
-        std::cerr << "[FaceRecognizer] face detection failed: " << e.what() << std::endl;
+        logging::error("FaceRecognizer", logging::text("face detection failed: ", e.what()));
         return false;
     }
 }

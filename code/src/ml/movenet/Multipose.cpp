@@ -1,4 +1,7 @@
 #include "Multipose.h"
+#include "../../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::ml::movenet;
 
@@ -66,7 +69,7 @@ bool Multipose::init() {
 
     auto modelLoad = litert::CompiledModel::Create(*modelEnv, "./res/movenet-multipose.tflite", litert::HwAccelerators::kCpu);
     if (!modelLoad.HasValue()) {
-        std::cerr << "[Movenet Multipose] unable to load model: " << modelLoad.Error().Message() << std::endl;
+        logging::error("Movenet Multipose", logging::text("unable to load model: ", modelLoad.Error().Message()));
         return false;
     }
     model = std::move(modelLoad.Value());
@@ -83,19 +86,19 @@ bool Multipose::init() {
 
 bool Multipose::run(const std::vector<uint8_t> &data) {
     if (!processInput(data, model, inputBuffers[0])) {
-        std::cerr << "[Movenet Multipose] error while converting or setting input image" << std::endl;
+        logging::error("Movenet Multipose", "error while converting or setting input image");
         return false;
     }
 
     auto status = model.Run(inputBuffers, outputBuffers);
     if (!status.HasValue()) {
-        std::cerr << "[Movenet Multipose] error while running inference: " << status.Error().Message() << std::endl;
+        logging::error("Movenet Multipose", logging::text("error while running inference: ", status.Error().Message()));
         return false;
     }
 
     status = outputBuffers[0].Read(absl::MakeSpan(keypointData));
     if (!status.HasValue()) {
-        std::cerr << "[Movenet Multipose] error reading output tensor: " << status.Error().Message() << std::endl;
+        logging::error("Movenet Multipose", logging::text("error reading output tensor: ", status.Error().Message()));
         return false;
     }
 
