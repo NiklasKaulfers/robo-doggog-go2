@@ -22,7 +22,7 @@ This file describes what the code does and how it is put together.
    person (proportional control) and detours around obstacles using a remembered LiDAR
    map. When the person leaves the view it searches in phases: it heads where they were
    going (Pursue), turns once on the spot (LookAround), roams a growing area around
-   where they were last seen (Sweep), and after 2 minutes stops and watches (GaveUp).
+   where they were last seen (Sweep), and after 10 minutes stops and watches (GaveUp).
    `FollowPerson` connects it to the robot and slows down on stairs.
 4. **Stays safe.** Movement only goes through the Go2 obstacle avoidance service. Any
    remote controller input pauses the program, and Ctrl+C hands control back cleanly.
@@ -95,13 +95,13 @@ Every iteration:
      scaled by its cosine so the robot turns onto a detour before walking. With a stale
      height map (> 1 s) it only turns. Caps: 0.6 m/s, 0.6 rad/s.
    - **Pursue** (tracker reports Lost): chase the predicted position the same way, until
-     within 0.6 m of it or for 8 s.
+     within 0.6 m of it or for 15 s.
    - **LookAround**: turn on the spot at 0.4 rad/s toward the side the person left,
      until the odometry yaw says one full turn is done.
    - **Sweep**: `ExplorePlanner` roams with a search focus around where the person was
-     last seen (2 m, growing 0.1 m/s up to 8 m, biased toward their walking direction).
+     last seen (3 m, growing 0.15 m/s up to 20 m, biased toward their walking direction).
      Its caps apply (0.4 m/s, 0.6 rad/s); on a stale map it stops.
-   - **GaveUp**: after 120 s of searching (paused time excluded), stand still.
+   - **GaveUp**: after 600 s of searching (paused time excluded), stand still.
    In every search phase, the target being recognized again means Following at once.
 3. `drive()` sends the command; on detected stairs (body pitch/height change with
    hysteresis) it limits it to slow, straight, forward movement, in every phase.

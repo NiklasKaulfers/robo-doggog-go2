@@ -405,7 +405,7 @@ static void testPursueBlocked() {
         collided = collided || pen(w.pose.x, w.pose.y) > 0;
     }
     check(w.last.phase == Phase::LookAround, "gives up on the spot and looks around");
-    check(pursued > 7 && pursued < 9.5f, "after the pursue timeout (" + num(pursued) + " s)");
+    check(pursued > 14 && pursued < 16.5f, "after the 15 s pursue timeout (" + num(pursued) + " s)");
     check(!collided, "without walking into the walls");
     check(w.logged("could not get where they were heading"), "the timeout is logged");
 }
@@ -415,12 +415,12 @@ static void testSweepArea(uint32_t seed, int& onWalkingSide, int& samples, bool&
     const auto lastSeen = loseWalkingTarget(w);
     while (w.last.phase != Phase::Sweep && w.time < 120) w.tick();
     const float start = w.last.searchSeconds;
-    for (int i = 0; i < 600 && w.last.phase == Phase::Sweep; i++) {
+    for (int i = 0; i < 1200 && w.last.phase == Phase::Sweep; i++) {
         w.tick();
         const float d = std::hypot(w.pose.x - lastSeen.first, w.pose.y - lastSeen.second);
-        // the area starts at 2 m and grows by 0.1 m/s; the robot's own position may lag
-        // its goal a little
-        const float radius = std::min(2.0f + 0.1f * (w.last.searchSeconds - start), 8.0f);
+        // the area starts at 3 m and grows by 0.15 m/s up to 20 m; the robot's own
+        // position may lag its goal a little
+        const float radius = std::min(3.0f + 0.15f * (w.last.searchSeconds - start), 20.0f);
         inside = inside && d <= radius + 0.8f;
         farthest = std::max(farthest, d);
         samples++;
@@ -435,9 +435,9 @@ static void testSweep() {
     bool inside = true;
     float farthest = 0;
     for (uint32_t seed = 1; seed <= 3; seed++) testSweepArea(seed, onWalkingSide, samples, inside, farthest);
-    check(samples > 1000, "swept for a minute per run");
+    check(samples > 3000, "swept for two minutes per run");
     check(inside, "the robot stays inside the growing search area");
-    check(farthest > 3.5f, "the area grows over time (got " + num(farthest) + " m away)");
+    check(farthest > 10, "the area grows well beyond the first look (got " + num(farthest) + " m away)");
     const float share = static_cast<float>(onWalkingSide) / std::max(samples, 1);
     check(share > 0.65f, "mostly on the side they walked to (" + num(share * 100) + " % of the time)");
 }
@@ -472,11 +472,14 @@ static void testGaveUp() {
     World w;
     loseWalkingTarget(w);
     bool stoppedInTime = true;
-    while (w.last.phase != Phase::GaveUp && w.time < 200) {
+    float searchedBeforeGivingUp = 0;
+    while (w.last.phase != Phase::GaveUp && w.time < 800) {
         w.tick();
-        if (w.last.searchSeconds > 121) stoppedInTime = false;
+        if (w.last.searchSeconds > 601) stoppedInTime = false;
+        if (w.last.phase != Phase::GaveUp) searchedBeforeGivingUp = w.last.searchSeconds;
     }
-    check(w.last.phase == Phase::GaveUp && stoppedInTime, "GaveUp after the 2 minute search limit (" + num(w.last.searchSeconds) + " s)");
+    check(searchedBeforeGivingUp > 599, "keeps searching for 10 minutes (" + num(searchedBeforeGivingUp) + " s)");
+    check(w.last.phase == Phase::GaveUp && stoppedInTime, "GaveUp after the 10 minute search limit (" + num(w.last.searchSeconds) + " s)");
     check(w.logged("GaveUp"), "logged");
     bool still = true;
     w.run(10, [&] { still = still && w.last.x == 0 && w.last.z == 0; });

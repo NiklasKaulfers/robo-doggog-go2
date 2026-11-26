@@ -56,11 +56,11 @@ another person, and the app warns about it when loading.
   the target is dropped and searched for. A face that clearly isn't the target's drops
   them at once, and a matching face on someone else takes the target over.
 - **Out of view**: the robot searches in phases. *Pursue*: it heads where the person
-  was walking (predicted from their last position and speed), for at most 8 s.
+  was walking (predicted from their last position and speed), for at most 15 s.
   *LookAround*: one full turn on the spot, measured by how far it really turned,
   starting toward the side they left. *Sweep*: it roams inside a search area around
-  where they were last seen, mostly the way they walked; the area starts at 2 m and
-  grows by 0.1 m/s up to 8 m. *GaveUp*: after 2 minutes of searching it stops and
+  where they were last seen, mostly the way they walked; the area starts at 3 m and
+  grows by 0.15 m/s up to 20 m. *GaveUp*: after 10 minutes of searching it stops and
   stands, still watching. In every phase they are recognized again by their face or
   clothes anywhere in view; for the first 2 s also by simply showing up in the
   direction they went, if their clothes don't contradict it. Time under remote control

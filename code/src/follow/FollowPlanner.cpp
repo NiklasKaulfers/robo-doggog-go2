@@ -35,23 +35,25 @@ static constexpr float MAP_STALE_SECONDS = 1.0f;
 // --- searching (starting values, tune on the robot) ---
 // Pursue: close enough to the predicted position, or given up on reaching it (s)
 static constexpr float ARRIVAL_DISTANCE = 0.6f;
-static constexpr float PURSUE_TIMEOUT = 8.0f;
+static constexpr float PURSUE_TIMEOUT = 15.0f;
 // LookAround: turn speed (rad/s) and how far to turn (rad, one full turn)
 static constexpr float LOOK_AROUND_SPEED = 0.4f;
 static constexpr float LOOK_AROUND_ANGLE = 2 * static_cast<float>(M_PI);
 // Sweep: the search area around where they were last seen starts at this radius (m),
-// grows by this much per second up to the maximum
-static constexpr float SWEEP_START_RADIUS = 2.0f;
-static constexpr float SWEEP_GROWTH = 0.1f;
-static constexpr float SWEEP_MAX_RADIUS = 8.0f;
+// grows by this much per second up to the maximum (reached after ~2 min of sweeping).
+// Much more than 20 m doesn't help: the remembered height map is 40 x 40 m around the
+// robot and forgets terrain after 3 minutes
+static constexpr float SWEEP_START_RADIUS = 3.0f;
+static constexpr float SWEEP_GROWTH = 0.15f;
+static constexpr float SWEEP_MAX_RADIUS = 20.0f;
 // goals in the direction they walked score up to this much more (the ExplorePlanner's
 // novelty counts up to 4, its randomness up to 2), when they walked at least this fast (m/s)
 static constexpr float SWEEP_DIRECTION_BONUS = 3.0f;
 static constexpr float SWEEP_MIN_WALKING_SPEED = 0.2f;
 // the area size is logged whenever it grew by this much (m)
-static constexpr float SWEEP_LOG_STEP = 2.0f;
+static constexpr float SWEEP_LOG_STEP = 5.0f;
 // total time of Pursue + LookAround + Sweep before giving up and standing still (s)
-static constexpr float SEARCH_LIMIT = 120.0f;
+static constexpr float SEARCH_LIMIT = 600.0f;
 // one step counts for the search timers at most this much (s), so long gaps between
 // steps (remote controller, sensor trouble) don't use up the search time
 static constexpr float MAX_STEP_SECONDS = 0.5f;
