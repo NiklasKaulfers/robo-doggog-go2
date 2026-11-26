@@ -48,18 +48,27 @@ another person, and the app warns about it when loading.
   checked again.
 - **Without photos**: the first person that stays in view for a moment is followed, and
   their face (when they look at the robot) and clothes are learned from the camera.
-  From then on they are the one being recognized, just like with photos.
+  From then on they are the one being recognized, just like with photos. They stay the
+  target for the whole run: if they are lost before anything was learned about them,
+  the robot does not pick a new "first person", only the operator reset does.
 - **Someone steps in front / people cross**: the clothes of the person being followed
   are compared every frame. If they stop looking like the target's for half a second,
   the target is dropped and searched for. A face that clearly isn't the target's drops
   them at once, and a matching face on someone else takes the target over.
-- **Out of view**: the robot heads where the person was walking (predicted from their
-  last position and speed), looks around there, and after 10 s roams around. They are
-  recognized again by their face or clothes anywhere in view; for the first 2 s also
-  by simply showing up in the direction they went, if their clothes don't contradict it.
+- **Out of view**: the robot searches in phases. *Pursue*: it heads where the person
+  was walking (predicted from their last position and speed), for at most 15 s.
+  *LookAround*: one full turn on the spot, measured by how far it really turned,
+  starting toward the side they left. *Sweep*: it roams inside a search area around
+  where they were last seen, mostly the way they walked; the area starts at 3 m and
+  grows by 0.15 m/s up to 20 m. *GaveUp*: after 10 minutes of searching it stops and
+  stands, still watching. In every phase they are recognized again by their face or
+  clothes anywhere in view; for the first 2 s also by simply showing up in the
+  direction they went, if their clothes don't contradict it. Time under remote control
+  doesn't count toward the search.
 - **Remote**: any stick or button pauses the program until the remote has been idle for
-  1.5 s. L1 + R1 + Y toggles exploring (roaming on its own); pressing it again goes
-  back to following whoever is recognized next.
+  1.5 s. L1 + R1 + Y toggles exploring (roaming on its own); each press is also an
+  operator reset: afterwards the next person who stays in view becomes the target
+  (with photos: the person in the photos again).
 
 ### Debug frames
 
@@ -67,7 +76,9 @@ another person, and the app warns about it when loading.
 track id, face evidence (-1..1) and the latest face similarity, clothing similarity,
 the head region searched for a face (yellow), the face found (green = match, red =
 mismatch), and the torso/legs regions the clothes are taken from. The target has a
-thick green box. The log prints a status line every 5 s with the same numbers, use
+thick green box. The top left shows the phase (Following, Pursue, LookAround, Sweep,
+GaveUp) and how long the search has been going. Every phase change is logged with its
+reason (`[Follow] Following -> Pursue: lost the target, ...`). The log prints a status line every 5 s with the same numbers, use
 them for tuning.
 
 ### Tuning
@@ -80,7 +91,9 @@ The thresholds are constants at the top of these files:
 | clothing: how alike to keep following (0.5), to find again (0.7), to learn (0.6) | `code/src/tracking/TargetTracker.cpp` |
 | face evidence needed to be the person / to be rejected | `code/src/tracking/TargetTracker.cpp` |
 | camera field of view and distance calibration | `code/src/tracking/CameraGeometry.h` |
-| following distance, speeds, obstacle detours, stairs | `code/src/tricks/FollowPerson.cpp` |
+| following distance, speeds, obstacle detours | `code/src/follow/FollowPlanner.cpp` |
+| search: pursue timeout, look-around turn, sweep area and growth, total search time | `code/src/follow/FollowPlanner.cpp` |
+| stairs, watchdogs | `code/src/tricks/FollowPerson.cpp` |
 | histogram layout and body regions of the clothes | `code/src/ml/Appearance.cpp` |
 
 ## Code layout
@@ -91,8 +104,9 @@ code/src/ml/          PersonDetection (a person in frame pixels), FaceRecognizer
                       Appearance (clothing descriptor and model), movenet/ (pose detector via LiteRT)
 code/src/tracking/    TargetTracker (who to follow: tracks everyone, accumulates face/clothing
                       evidence, picks and keeps the target), CameraGeometry
-code/src/tricks/      FollowPerson (the walking), Explore (roaming), TurnToPerson, SitStandApproach
-code/tools/           facecheck (check photos), trackertest, appearancetest, maptest, exploretest (offline self-tests)
+code/src/follow/      FollowPlanner (following and searching: Following, Pursue, LookAround, Sweep, GaveUp; no robot needed)
+code/src/tricks/      FollowPerson (robot glue: camera, remote, watchdogs, stairs), Explore (roaming), TurnToPerson, SitStandApproach
+code/tools/           facecheck (check photos), trackertest, appearancetest, maptest, exploretest, followtest (offline self-tests)
 code/res/             models: movenet-multipose.tflite, face_detection_yunet_2022mar.onnx, face_recognition_sface_2021dec.onnx
 ```
 
@@ -111,4 +125,5 @@ The recognition code only needs OpenCV, so the offline tools also build on a lap
 cmake -S code -B build-tools -DFOLLOW_TOOLS_ONLY=ON
 cmake --build build-tools
 cd code && ../build-tools/trackertest      # self-test, needs ./res for the face models
+cd code && ../build-tools/followtest       # follow / lose / search / find again with a simulated robot, needs ./res
 ```

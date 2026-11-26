@@ -6,17 +6,15 @@
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
+#include <random>
 #include <sstream>
 #include <thread>
 #include "opencv2/imgcodecs.hpp"
 #include "../ml/movenet/Multipose.h"
-#include "../tracking/CameraGeometry.h"
 
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
 using namespace robo::sdk::tracking;
-
-static constexpr float TARGET_DISTANCE = 0.5f;
 
 // stairs are detected by the body tilting forward/backward. Entering and leaving use
 // different thresholds (hysteresis) so the robot doesn't toggle on every step edge.
@@ -33,37 +31,19 @@ static constexpr float STAIR_MAX_YAW = 0.2f;
 // tilted sideways this far means the robot is about to slip off a step
 static constexpr float STAIR_MAX_ROLL = 0.35f;      // ~20 degrees
 
-static constexpr float TURN_GAIN = 1.0f;
-// route planning: how far ahead the path to the person must be free
-static constexpr float PLAN_LOOKAHEAD = 1.5f;
-// the person's legs show up as an obstacle in the height map, stop checking before them
-static constexpr float PERSON_MARGIN = 0.4f;
-// closer than this to an obstacle the robot only turns, it doesn't walk forward
-static constexpr float MIN_CLEARANCE = 0.35f;
-// detours are tried in steps of ~10 degrees up to ~70 degrees to either side
-static constexpr float DETOUR_STEP = 0.17f;
-static constexpr int DETOUR_STEPS = 7;
-// a planned route is followed by steering toward the point this far along it
-static constexpr float PATH_LOOKAHEAD = 0.8f;
-
 // pose detections below this confidence are ignored
 static constexpr float MIN_CONFIDENCE = 0.15f;
-// once at the predicted spot, look around toward the side the person left
-static constexpr float SEARCH_ARRIVED = 0.6f;
-static constexpr float SEARCH_TURN_SPEED = 0.4f;
-// after this the robot roams around semi-randomly until the person shows up again
-static constexpr float SEARCH_TIMEOUT = 10.0f;
 // how often a debug frame is written
 static constexpr auto DEBUG_FRAME_INTERVAL = std::chrono::milliseconds(1000);
-// watchdogs (s): odometry older than this stops the robot; a height map older than this
-// isn't trusted for obstacles, so the robot only turns toward the person
+// watchdog (s): odometry older than this stops the robot. (A stale height map is handled
+// by the FollowPlanner: it only turns then.)
 static constexpr float STATE_TIMEOUT = 0.5f;
-static constexpr float MAP_STALE_SECONDS = 1.0f;
 // fixed period of the run loop; the sample counts above (e.g. 3 samples = 0.3 s) assume it
 static constexpr auto LOOP_PERIOD = std::chrono::milliseconds(100);
 
 FollowPerson::FollowPerson(core::Control& control, std::string targetImages, std::string debugDir)
-    : roboControl(control), targetImages(std::move(targetImages)), debugDir(std::move(debugDir)) {
+    : roboControl(control), targetImages(std::move(targetImages)), planner(obstacleMap, std::random_device {}()),
+      debugDir(std::move(debugDir)) {
     videoClient.Init();
     mapSubscriber.init();
 }
@@ -103,9 +83,9 @@ void FollowPerson::runWithMultipose() {
     movenet::Multipose detector;
     if (!detector.init()) return;
 
-    if (!tracker.init()) return;
+    if (!planner.init()) return;
     if (!targetImages.empty()) {
-        if (!tracker.loadReferencePhotos(targetImages)) {
+        if (!planner.loadReferencePhotos(targetImages)) {
             std::cerr << "[FollowPerson] no usable face found in the photos in " << targetImages << std::endl;
             return;
         }
@@ -135,7 +115,6 @@ void FollowPerson::runWithMultipose() {
     // sensor failures are logged once when they start and once when they end
     bool stateStale = false;
     bool cameraFailed = false;
-    bool mapStale = false;
 
     while (!core::Control::stopRequested) {
         // fixed period: sleep only the rest of it. A tick that overran resyncs instead of
@@ -159,15 +138,16 @@ void FollowPerson::runWithMultipose() {
             } else {
                 std::cout << "[FollowPerson] stopped exploring, following again" << std::endl;
             }
-            // afterwards follow whoever is recognized next
-            tracker.dropTarget();
-            roamSearching = false;
+            // operator reset: afterwards the next person (or the one in the photos) is followed
+            planner.reset();
         }
 
-        // the remote controller always wins: don't send anything while it is used
+        // the remote controller always wins: don't send anything while it is used. Time
+        // under remote control doesn't count toward the search
         if (roboControl.controllerActive()) {
             roboControl.releaseControl();
             moving = false;
+            planner.pause();
             continue;
         }
 
@@ -180,6 +160,7 @@ void FollowPerson::runWithMultipose() {
         }
         if (stateStale) {
             stop();
+            planner.pause();
             continue;
         }
 
@@ -188,6 +169,7 @@ void FollowPerson::runWithMultipose() {
             float x, z;
             explorer.step(x, z);
             drive(x, z);
+            planner.pause();
             continue;
         }
 
@@ -201,6 +183,7 @@ void FollowPerson::runWithMultipose() {
             }
             cameraFailed = true;
             stop();
+            planner.pause();
             continue;
         }
         if (cameraFailed) {
@@ -213,88 +196,10 @@ void FollowPerson::runWithMultipose() {
         const cv::Mat& frame = detector.frame();
 
         collectDetections(detector, detections);
-        const auto& target = tracker.update(detections, frame, pose, now);
+        const auto& step = planner.step(detections, frame, pose, now);
         if (!debugDir.empty()) saveDebugFrame(frame, now);
-
-        float distance, personAngle;
-        if (target.visible) {
-            roamSearching = false;
-            distance = CameraGeometry::distance(target.target.box, frame.cols);
-            personAngle = CameraGeometry::angle(target.target.box, frame.cols);
-        } else if (target.state == TargetTracker::State::Searching) {
-            // nobody to follow (yet): wait where we are. A later Lost phase starts roaming fresh
-            roamSearching = false;
-            stop();
-            continue;
-        } else {
-            // not where they were heading: walk around semi-randomly, the detector keeps
-            // running every step, so the person is followed again as soon as they show up
-            if (target.secondsSinceSeen > SEARCH_TIMEOUT) {
-                if (!roamSearching) {
-                    std::cout << "[FollowPerson] person not found nearby, roaming around to find them" << std::endl;
-                    explorer.reset();
-                    roamSearching = true;
-                }
-                float x, z;
-                explorer.step(x, z);
-                drive(x, z);
-                continue;
-            }
-
-            // head for the predicted position; it's outside the camera view, so turning
-            // toward it means looking in the direction the person left
-            distance = target.predictedDistance;
-            personAngle = target.predictedAngle;
-        }
-
-        // proportional control so the motion is smooth instead of walking straight and
-        // suddenly turning once the person leaves a band around the image center
-        // (x: move toward the person if too far, away if too close)
-        float x = std::clamp(0.5f * (distance - TARGET_DISTANCE), -0.6f, +0.6f);
-
-        // a height map that stopped updating is treated as no map: its obstacles can't be
-        // trusted, so don't walk forward on it. INFINITY = never received
-        const float mapAge = obstacleMap.secondsSinceUpdate();
-        const bool mapOld = std::isfinite(mapAge) && mapAge > MAP_STALE_SECONDS;
-        if (mapOld != mapStale) {
-            mapStale = mapOld;
-            if (mapStale) std::cerr << "[FollowPerson] height map is stale, only turning" << std::endl;
-            else std::cout << "[FollowPerson] height map is updating again" << std::endl;
-        }
-
-        // when walking toward the person, take a detour around obstacles in the way
-        float heading = personAngle;
-        if (x > 0 && mapStale) {
-            x = 0;
-        } else if (x > 0) {
-            float clearance = 0;
-            heading = CameraGeometry::wrapAngle(planHeading(personAngle, distance, clearance));
-            // x drives the body along its current yaw, not along the planned heading, so the
-            // room straight ahead limits it as well. That ray ends PERSON_MARGIN before the
-            // person (same as planHeading), so their legs don't count as an obstacle
-            const float needed = std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD);
-            if (obstacleMap.available() && needed > 0) {
-                const float ahead = obstacleMap.freeDistance(pose.x, pose.y, pose.yaw, needed);
-                clearance = std::min(clearance, ahead >= needed ? PLAN_LOOKAHEAD : ahead);
-            }
-            // slow down in front of obstacles and only turn if nothing is free
-            x = std::min(x, std::max(0.0f, 0.5f * (clearance - MIN_CLEARANCE)));
-            // turn onto the detour before walking along it
-            x *= std::max(0.0f, std::cos(heading));
-        }
-
-        // z: rotate toward the chosen heading, proportional to how far off it is.
-        // with this there is no "perfect center" needed for the rotation to start
-        float z = std::clamp(TURN_GAIN * heading, -0.6f, +0.6f);
-
-        // arrived where the person should be but still can't see them: look around,
-        // starting with the side they disappeared to
-        if (!target.visible && target.predictedDistance < SEARCH_ARRIVED) {
-            x = 0;
-            z = target.lostSide * SEARCH_TURN_SPEED;
-        }
-
-        drive(x, z);
+        // every phase goes through drive(): stair limits and obstacle avoidance apply
+        drive(step.x, step.z);
     }
     // leaving the loop: don't leave the last command running
     stop();
@@ -305,7 +210,7 @@ void FollowPerson::saveDebugFrame(const cv::Mat& frame, std::chrono::steady_cloc
     lastDebugFrame = now;
 
     cv::Mat annotated = frame.clone();
-    tracker.drawDebug(annotated);
+    planner.drawDebug(annotated);
     std::ostringstream name;
     name << "frame_" << std::setw(5) << std::setfill('0') << debugFrameCount++ << ".jpg";
     const auto path = std::filesystem::path(debugDir) / name.str();
@@ -368,63 +273,4 @@ void FollowPerson::stop() {
     if (!moving) return;
     // keep `moving` set when the stop failed so the next tick retries
     if (roboControl.stopMovement()) moving = false;
-}
-
-float FollowPerson::planHeading(float personAngle, float distance, float& clearance) {
-    const float needed = std::min(distance - PERSON_MARGIN, PLAN_LOOKAHEAD);
-    if (!obstacleMap.available() || needed <= 0) {
-        clearance = PLAN_LOOKAHEAD;
-        return personAngle;
-    }
-
-    const float x = roboControl.positionX();
-    const float y = roboControl.positionY();
-    const float yaw = roboControl.yaw();
-
-    // route through everything seen in the last minutes, so the robot can use a way
-    // around that it saw earlier but that is out of the LiDAR's range now
-    const float targetX = x + distance * std::cos(yaw + personAngle);
-    const float targetY = y + distance * std::sin(yaw + personAngle);
-    std::vector<std::pair<float, float>> path;
-    if (obstacleMap.planPath(x, y, targetX, targetY, PERSON_MARGIN, path) && path.size() > 1) {
-        auto aim = path.back();
-        for (const auto& point : path) {
-            if (std::hypot(point.first - x, point.second - y) >= PATH_LOOKAHEAD) {
-                aim = point;
-                break;
-            }
-        }
-        const float heading = CameraGeometry::wrapAngle(std::atan2(aim.second - y, aim.first - x) - yaw);
-        const float aimDistance = std::hypot(aim.first - x, aim.second - y);
-        clearance = obstacleMap.freeDistance(x, y, yaw + heading, std::max(std::min(needed, aimDistance), MIN_CLEARANCE));
-        // the route already goes around everything, only nearby obstacles slow it down
-        if (clearance >= std::min(needed, aimDistance)) clearance = PLAN_LOOKAHEAD;
-        return heading;
-    }
-
-    // no route found (e.g. target outside the map): detour by looking straight ahead
-
-    // try the direct heading first, then detours further and further to the side.
-    // the side of the last detour is tried first so the robot doesn't zig-zag
-    float bestHeading = personAngle;
-    float bestFree = -1;
-    for (int i = 0; i <= 2 * DETOUR_STEPS; i++) {
-        const int k = (i + 1) / 2 * (i % 2 ? lastDetourSide : -lastDetourSide);
-        const float heading = CameraGeometry::wrapAngle(personAngle + k * DETOUR_STEP);
-        const float free = obstacleMap.freeDistance(x, y, yaw + heading, needed);
-
-        if (free >= needed) {
-            if (k != 0) lastDetourSide = k > 0 ? 1 : -1;
-            clearance = free;
-            return heading;
-        }
-        if (free > bestFree) {
-            bestFree = free;
-            bestHeading = heading;
-        }
-    }
-
-    // nothing is completely free: head where there is the most room
-    clearance = bestFree;
-    return bestHeading;
 }

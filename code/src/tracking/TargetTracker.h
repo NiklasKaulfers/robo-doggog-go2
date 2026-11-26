@@ -25,7 +25,9 @@ struct RobotPose {
 //
 //  - with reference photos, only a person whose face matched is ever followed first.
 //    Without photos, the first person seen is followed and their face and clothes are
-//    learned from the camera, from then on they are the one being recognized
+//    learned from the camera, from then on they are the one being recognized. That
+//    happens once per run: a target lost before anything was learned is not replaced by
+//    the next person seen, only dropTarget (the operator reset) allows a new first person
 //  - while following, the person is kept by continuity of their box. Their clothes are
 //    checked every frame (so someone stepping in front of them is noticed), their face
 //    whenever it is visible. A face that clearly isn't theirs drops the target at once,
@@ -65,6 +67,15 @@ public:
         float secondsSinceSeen = 0;
         // 1 = left, -1 = right: the side where the person went out of view
         int lostSide = 1;
+
+        // where the target was last seen and how they were walking (m, m/s, odometry
+        // frame); valid when positionKnown
+        bool positionKnown = false;
+        float lastSeenX = 0, lastSeenY = 0;
+        float walkingX = 0, walkingY = 0;
+        // how the target was chosen, only set in the frame they were chosen (e.g. "face
+        // similarity 0.52", "clothing similarity 0.81"), empty otherwise
+        std::string foundBy;
     };
 
     // resourceDir holds the face models
@@ -77,7 +88,10 @@ public:
     const Status& update(const std::vector<ml::PersonDetection>& detections, const cv::Mat& frame,
                          const RobotPose& pose, Clock::time_point now);
 
-    // forgets the target but not who they are: whoever is recognized next is followed
+    // operator reset: forgets the target, and allows choosing a new first person again.
+    // With reference photos the person stays the one in the photos (whoever is recognized
+    // next is followed). Without photos the face and clothes learned from the camera are
+    // forgotten too, so the next person who stays in view becomes the new target
     void dropTarget();
     const Status& status() const { return current; }
 
@@ -137,6 +151,10 @@ private:
     std::vector<Track> tracks;
     int nextTrackId = 1;
     int targetId = -1;
+    // a target was chosen since the start or the last dropTarget: from then on only
+    // recognition (face, clothes, where they went) brings a target back, never "the
+    // first person seen", so a passer-by can't replace the person followed so far
+    bool targetChosen = false;
     Status current;
     cv::Size frameSize;
 

@@ -74,6 +74,17 @@ public:
 
     enum class State { NoMap, MapStale, FrameMismatch, InvalidPose, LookingAround, Searching, Walking };
 
+    // limits the roaming to an area, e.g. around where a person was last seen. Goals
+    // outside the circle are skipped; spots lying from the center toward direction (world
+    // angle, rad) score up to directionBonus more, 0 = no preferred direction
+    struct SearchFocus
+    {
+        float x = 0, y = 0;
+        float radius = 0;
+        float direction = 0;
+        float directionBonus = 0;
+    };
+
 private:
     ObstacleMap& map;
     Clock clock;
@@ -100,6 +111,8 @@ private:
     float lastTurnSign = 0;
     // result of the last chooseGoal: whether there were any spots before filtering
     bool lastHadSpots = false;
+    bool hasFocus = false;
+    SearchFocus focus;
 
 public:
 
@@ -108,7 +121,12 @@ public:
     // log output, default prints "[Explore] ..." to std::cout
     void setLogger(Logger newLogger);
     // forgets everything from a previous run: goal, trail, failed goals, timers, counters
+    // and the search focus
     void reset();
+    // from now on goals are only chosen inside this area (the current goal is kept)
+    void setSearchFocus(const SearchFocus& newFocus);
+    // roam anywhere again
+    void clearSearchFocus();
     ExploreCommand step(const ExplorePose& pose);
 
     State state() const { return currentState; }

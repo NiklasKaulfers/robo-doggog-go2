@@ -9,15 +9,15 @@
 #include "vector"
 #include <chrono>
 #include <string>
+#include "../follow/FollowPlanner.h"
 #include "../ml/movenet/Multipose.h"
 #include "../ml/PersonDetection.h"
-#include "../tracking/TargetTracker.h"
 
 namespace robo::sdk::examples {
-// Follows one person. Who that is and where they are is the TargetTracker's job (face
-// recognition against reference photos, clothes learned from the camera), this class
-// does the walking: keeping the distance, going around obstacles, finding them again
-// where they went, and being careful on stairs.
+// Follows one person. What to do is decided by the follow::FollowPlanner (who the target
+// is, chasing them, searching when they are lost); this class connects it to the robot:
+// camera and pose detector, remote controller priority, the explore combo, watchdogs,
+// careful movement on stairs and debug frames.
 class FollowPerson {
 
     core::Control& roboControl;
@@ -31,19 +31,14 @@ class FollowPerson {
     core::ObstacleMap obstacleMap;
     // feeds the LiDAR height map into obstacleMap
     core::ObstacleMapSubscriber mapSubscriber {obstacleMap, roboControl};
-    // 1 = left, -1 = right; detours keep going around the same side
-    int lastDetourSide = 1;
 
     // toggled with the explore button combo on the remote
     bool exploring = false;
     Explore explorer {roboControl, obstacleMap};
 
-    // roaming around to find the lost person after looking where they went didn't help
-    bool roamSearching = false;
-
     // folder with photos of the person to follow, empty = follow whoever shows up first
     std::string targetImages;
-    tracking::TargetTracker tracker;
+    follow::FollowPlanner planner;
 
     // folder where annotated camera frames are written for debugging, empty = off
     std::string debugDir;
@@ -67,9 +62,6 @@ private:
     static void collectDetections(const ml::movenet::Multipose& detector, std::vector<ml::PersonDetection>& out);
     // writes an annotated frame to debugDir now and then
     void saveDebugFrame(const cv::Mat& frame, std::chrono::steady_clock::time_point now);
-    // heading (relative to the robot) toward the person that avoids obstacles in the
-    // remembered map; clearance is set to how far the robot can walk along it
-    float planHeading(float personAngle, float distance, float& clearance);
     // detects stairs from body tilt and height change, the gait itself is left to the robot
     void updateStairMode(int& stairSamples, float& levelHeight);
 };

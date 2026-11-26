@@ -31,6 +31,14 @@ add_library(navigation STATIC
         src/core/ExplorePlanner.h
 )
 
+# following one person and searching for them when lost, on top of recognition and
+# navigation; needs no robot either, so it is shared by the app and the offline tools
+add_library(following STATIC
+        src/follow/FollowPlanner.cpp
+        src/follow/FollowPlanner.h
+)
+target_link_libraries(following recognition navigation ${OpenCV_LIBS})
+
 # checks the reference photos of the person to follow, runs without the robot
 add_executable(facecheck tools/facecheck.cpp)
 target_link_libraries(facecheck recognition ${OpenCV_LIBS})
@@ -53,6 +61,11 @@ target_link_libraries(maptest navigation)
 # neither the robot nor the models
 add_executable(exploretest tools/exploretest.cpp)
 target_link_libraries(exploretest navigation)
+
+# self-test of following and searching with a simulated robot, simulated people and
+# synthetic terrain, needs only the face models in ./res
+add_executable(followtest tools/followtest.cpp)
+target_link_libraries(followtest following ${OpenCV_LIBS})
 
 # the robot app needs the Unitree SDK and LiteRT, which only exist on the Go2's Jetson.
 # Set FOLLOW_TOOLS_ONLY=ON to build just the offline tools elsewhere
@@ -90,5 +103,5 @@ if (NOT FOLLOW_TOOLS_ONLY)
             src/tricks/Explore.cpp
             src/tricks/Explore.h
     )
-    target_link_libraries(app recognition navigation unitree_sdk2 litert_cc_api ${OpenCV_LIBS})
+    target_link_libraries(app following recognition navigation unitree_sdk2 litert_cc_api ${OpenCV_LIBS})
 endif ()
