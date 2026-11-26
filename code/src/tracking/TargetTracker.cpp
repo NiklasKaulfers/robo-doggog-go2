@@ -111,9 +111,22 @@ bool TargetTracker::loadReferencePhotos(const std::string& folder) {
 }
 
 void TargetTracker::dropTarget() {
+    if (!referencePhotos) {
+        // the person was only defined by being followed: start over with whoever comes next
+        faces.clear();
+        clothes.clear();
+        cameraReferences = 0;
+        for (auto& t : tracks) {
+            t.faceEvidence = 0;
+            t.clothingSimilarity = t.clothingAverage = -1;
+            t.clothingLow = 0;
+            t.excluded = false;
+        }
+    }
     // nobody in view is trusted as the person anymore until recognized again
     for (auto& t : tracks) t.verified = t.defining = false;
     targetId = -1;
+    targetChosen = false;
     haveWorldTrack = false;
     visibleLastFrame = false;
     current = Status();
@@ -378,6 +391,7 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
 void TargetTracker::chooseTarget(Clock::time_point now) {
     Track* target = findTrack(targetId);
     current.visible = false;
+    current.foundBy.clear();
 
     if (target) {
         if (!target->matched) {
@@ -450,6 +464,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
                           << "), switching to them" << std::endl;
                 target = better;
                 targetId = better->id;
+                current.foundBy = "the face of someone else matches better";
             }
         }
     } else {
@@ -495,8 +510,10 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
             if (chosen) how = "showed up where they went";
         }
 
-        // 4. nothing to recognize anyone by: the first person that stays in view
-        if (!chosen && !identityKnown()) {
+        // 4. nothing to recognize anyone by and nobody followed yet: the first person
+        // that stays in view. Once someone was followed, only recognizing them brings
+        // them back, even if nothing was learned about them before they were lost
+        if (!chosen && !identityKnown() && !targetChosen) {
             for (auto& t : tracks) {
                 if (!t.matched || t.excluded || t.hits < FIRST_PERSON_STABLE_FRAMES) continue;
                 if (!chosen || t.person.score > chosen->person.score) chosen = &t;
@@ -514,10 +531,14 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
 
         target = chosen;
         targetId = chosen->id;
+        targetChosen = true;
+        current.foundBy = how;
         std::cout << "[Tracker] " << (haveWorldTrack ? "found the person again" : "found the person, following")
                   << " (" << how << ")" << std::endl;
     }
 
+    // the target's own track matched again after they were lost for a few frames
+    if (current.foundBy.empty() && current.state == State::Lost) current.foundBy = "back in view where they were tracked";
     current.state = State::Tracking;
     current.visible = true;
     current.target = target->person;
@@ -590,10 +611,16 @@ void TargetTracker::updateWorldTrack(const Track& target, const RobotPose& pose,
 }
 
 void TargetTracker::predictWorld(const RobotPose& pose, Clock::time_point now) {
+    current.positionKnown = haveWorldTrack;
     if (!haveWorldTrack) {
         current.predictedAngle = current.predictedDistance = current.secondsSinceSeen = 0;
+        current.lastSeenX = current.lastSeenY = current.walkingX = current.walkingY = 0;
         return;
     }
+    current.lastSeenX = personX;
+    current.lastSeenY = personY;
+    current.walkingX = personVX;
+    current.walkingY = personVY;
     const float sinceSeen = seconds(now - lastSeen);
     const float t = std::min(sinceSeen, PREDICT_HORIZON);
     const float predX = personX + personVX * t;

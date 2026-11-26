@@ -74,6 +74,11 @@ public:
     // adds a face seen on the camera. permanent faces are kept forever (the person's
     // identity when there are no photos), learned ones are a rolling set of recent views
     void learn(const cv::Mat& feature, bool permanent);
+    // forgets every face, enrolled or learned
+    void clear() {
+        references.clear();
+        learned.clear();
+    }
 
     bool hasReferences() const { return !references.empty(); }
     size_t gallerySize() const { return references.size() + learned.size(); }

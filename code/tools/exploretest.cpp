@@ -599,6 +599,69 @@ static void testConfigLimits() {
     check(d.state() == State::NoMap, "default clock and logger");
 }
 
+static void testSearchFocus() {
+    std::cout << "search focus" << std::endl;
+    const auto goalFor = [](uint32_t seed, const ExplorePlanner::SearchFocus* focus, bool clearAgain) {
+        TestMap t;
+        t.observe(flat);
+        ExplorePlanner p(t.map, seed, [&t] { return t.time; });
+        p.setLogger([](const std::string&) {});
+        if (focus) p.setSearchFocus(*focus);
+        if (clearAgain) p.clearSearchFocus();
+        const bool found = p.chooseGoal(0, 0);
+        return found ? p.goal() : std::make_pair(NAN, NAN);
+    };
+
+    // a search area 2.5m around a point 1m ahead of the robot
+    ExplorePlanner::SearchFocus area;
+    area.x = 1;
+    area.y = 0;
+    area.radius = 2.5f;
+    bool inside = true, all = true;
+    for (uint32_t seed = 1; seed <= 20; seed++) {
+        const auto g = goalFor(seed, &area, false);
+        all = all && std::isfinite(g.first);
+        inside = inside && std::hypot(g.first - area.x, g.second - area.y) <= area.radius + 1e-3f;
+    }
+    check(all, "goals are found inside the search area");
+    check(inside, "every goal lies inside the search area");
+
+    // the person walked toward -y: goals on that side of the area are preferred
+    ExplorePlanner::SearchFocus leaning;
+    leaning.radius = 4;
+    leaning.direction = -1.5707963f;
+    leaning.directionBonus = 3;
+    int ahead = 0, without = 0;
+    for (uint32_t seed = 1; seed <= 20; seed++) {
+        ahead += goalFor(seed, &leaning, false).second < 0;
+        ExplorePlanner::SearchFocus plain = leaning;
+        plain.directionBonus = 0;
+        without += goalFor(seed, &plain, false).second < 0;
+    }
+    check(ahead >= 18, "goals lean toward the walking direction (" + std::to_string(ahead) + "/20 on that side)");
+    check(without < 16, "without the bonus they don't (" + std::to_string(without) + "/20)");
+
+    bool same = true;
+    for (uint32_t seed = 1; seed <= 10; seed++) {
+        const auto a = goalFor(seed, nullptr, false), b = goalFor(seed, &area, true);
+        same = same && a == b;
+    }
+    check(same, "with the focus cleared, goals are the same as without one");
+
+    // reset() forgets the focus as well
+    TestMap t;
+    t.observe(flat);
+    ExplorePlanner p(t.map, 3, [&t] { return t.time; });
+    p.setLogger([](const std::string&) {});
+    ExplorePlanner::SearchFocus tiny;
+    tiny.x = 20;
+    tiny.radius = 0.5f;
+    p.setSearchFocus(tiny);
+    check(!p.chooseGoal(0, 0), "no goal when nothing reachable lies in the search area");
+    p.reset();
+    check(p.chooseGoal(0, 0), "reset() clears the search area");
+}
+
 static void testLongRun() {
     std::cout << "long run in a walled room" << std::endl;
     for (uint32_t seed = 1; seed <= 2; seed++) {
@@ -639,6 +702,7 @@ int main() {
     testBlockedAhead();
     testTurnSign();
     testConfigLimits();
+    testSearchFocus();
     testLongRun();
 
     std::cout << (failures == 0 ? "all checks passed" : std::to_string(failures) + " check(s) failed") << std::endl;

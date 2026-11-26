@@ -4,7 +4,9 @@
 // clothes after being out of view, and that a swap (someone else standing where they
 // were) is noticed. Then: the target is kept while the robot turns, a face mismatch
 // drops them for good, stale face observations don't count again, and a long pause
-// between frames neither extrapolates boxes nor hands the target to someone else.
+// between frames neither extrapolates boxes nor hands the target to someone else, a
+// target lost before anything was learned isn't replaced by a stranger, and the operator
+// reset hands the robot to the next person.
 // Faces can't be drawn (YuNet finds none), so face evidence is set directly. Runs
 // without the robot:
 //
@@ -449,6 +451,49 @@ int main() {
         check(followed, "followed all the way");
         const float speed = Probe::personSpeed(fast);
         check(speed > 1.4f && speed <= 1.5f + 1e-3f, "the speed is capped at 1.5 m/s (" + std::to_string(speed) + ")");
+    }
+
+    std::cout << "20b. the target is lost before anything was learned, then a stranger shows up" << std::endl;
+    {
+        TargetTracker once;
+        once.init("./res");
+        // a few frames: chosen as the first person, but too short to learn their clothes
+        for (int i = 0; i < 3; i++) run(once, now, {alice}, still);
+        check(once.status().visible, "the first person is followed");
+        // gone for longer than the "showed up where they went" window
+        for (int i = 0; i < 30; i++) run(once, now, {}, still);
+        bool strangerFollowed = false;
+        for (int i = 0; i < 20; i++) {
+            if (run(once, now, {bob}, still).visible) strangerFollowed = true;
+        }
+        check(!strangerFollowed, "the stranger is not taken as the new first person");
+        check(once.status().state == TargetTracker::State::Lost, "still searching for the first one");
+    }
+
+    std::cout << "20c. operator reset without photos: the next person becomes the target" << std::endl;
+    {
+        TargetTracker handover;
+        handover.init("./res");
+        for (int i = 0; i < 15; i++) run(handover, now, {alice}, still);
+        check(handover.status().visible, "following the first person, their clothes learned");
+        for (int i = 0; i < 30; i++) run(handover, now, {}, still);
+        handover.dropTarget();
+        for (int i = 0; i < 15; i++) run(handover, now, {bob}, still);
+        check(handover.status().visible && std::abs(handover.status().target.box.x - bob.x) < 1, "the next person is followed");
+        // the new person is the one recognized now: out of view and back, found by their clothes
+        for (int i = 0; i < 30; i++) run(handover, now, {}, still);
+        Person bobMoved = bob;
+        bobMoved.x = 200;
+        bool backOnBob = false;
+        for (int i = 0; i < 4; i++) backOnBob = run(handover, now, {bobMoved}, still).visible;
+        check(backOnBob, "they are recognized again by their own clothes");
+        // and the person from before the reset is not taken back by their clothes
+        handover.dropTarget();
+        for (int i = 0; i < 15; i++) run(handover, now, {bob}, still);
+        for (int i = 0; i < 30; i++) run(handover, now, {}, still);
+        bool oldOneFollowed = false;
+        for (int i = 0; i < 5; i++) oldOneFollowed = oldOneFollowed || run(handover, now, {alice}, still).visible;
+        check(!oldOneFollowed, "the person from before the reset is not recognized anymore");
     }
 
     std::cout << "21. the debug drawing" << std::endl;

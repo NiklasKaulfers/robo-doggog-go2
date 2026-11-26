@@ -48,6 +48,18 @@ namespace robo::sdk::core
         walkedLastStep = false;
         lastTurnSign = 0;
         lastHadSpots = false;
+        hasFocus = false;
+    }
+
+    void ExplorePlanner::setSearchFocus(const SearchFocus& newFocus)
+    {
+        focus = newFocus;
+        hasFocus = true;
+    }
+
+    void ExplorePlanner::clearSearchFocus()
+    {
+        hasFocus = false;
     }
 
     float ExplorePlanner::wrapAngle(float a)
@@ -85,7 +97,13 @@ namespace robo::sdk::core
         float novelty = cfg.noveltyCap;
         for (const auto& p : trail_)
             novelty = std::min(novelty, std::hypot(p.first - spot.x, p.second - spot.y));
-        return novelty + (spot.frontier ? cfg.frontierBonus : 0.0f) + randomPart;
+        float score = novelty + (spot.frontier ? cfg.frontierBonus : 0.0f) + randomPart;
+        if (hasFocus && focus.directionBonus > 0) {
+            const float dx = spot.x - focus.x, dy = spot.y - focus.y;
+            if (std::hypot(dx, dy) > 1e-3f)
+                score += focus.directionBonus * std::max(0.0f, std::cos(std::atan2(dy, dx) - focus.direction));
+        }
+        return score;
     }
 
     bool ExplorePlanner::chooseGoal(float rx, float ry)
@@ -108,6 +126,7 @@ namespace robo::sdk::core
                 return std::hypot(p.first - spot.x, p.second - spot.y) < cfg.failedGoalRadius;
             });
             if (failed) continue;
+            if (hasFocus && std::hypot(spot.x - focus.x, spot.y - focus.y) > focus.radius) continue;
 
             const float score = scoreSpot(spot, random(rng));
             if (score > bestScore) {
