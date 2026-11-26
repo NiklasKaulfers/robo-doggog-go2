@@ -1,0 +1,9 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/cmake_install.cmake",
+		"/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/cmake_install.cmake",
+		"/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/sim/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

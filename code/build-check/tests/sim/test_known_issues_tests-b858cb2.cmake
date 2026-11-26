@@ -1,0 +1,3 @@
+add_test( [==[test_known_issues:the robot finds its way around a low obstacle to the person]==] /Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/sim/test_known_issues [==[--test-case=the robot finds its way around a low obstacle to the person]==])
+set_tests_properties( [==[test_known_issues:the robot finds its way around a low obstacle to the person]==] PROPERTIES WORKING_DIRECTORY /Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code LABELS known TIMEOUT 120 LABELS)
+set( test_known_issues_TESTS [==[test_known_issues:the robot finds its way around a low obstacle to the person]==])

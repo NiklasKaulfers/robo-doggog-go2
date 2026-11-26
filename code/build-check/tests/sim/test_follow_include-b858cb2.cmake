@@ -1,0 +1,5 @@
+if(EXISTS "/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/sim/test_follow_tests-b858cb2.cmake")
+  include("/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/sim/test_follow_tests-b858cb2.cmake")
+else()
+  add_test(test_follow_NOT_BUILT-b858cb2 test_follow_NOT_BUILT-b858cb2)
+endif()

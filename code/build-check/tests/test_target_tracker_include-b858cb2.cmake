@@ -1,0 +1,5 @@
+if(EXISTS "/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/test_target_tracker_tests-b858cb2.cmake")
+  include("/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/test_target_tracker_tests-b858cb2.cmake")
+else()
+  add_test(test_target_tracker_NOT_BUILT-b858cb2 test_target_tracker_NOT_BUILT-b858cb2)
+endif()

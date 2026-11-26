@@ -1,0 +1,3 @@
+Source: https://github.com/mattpocock/skills @ 6f7f783
+Installed: engineering + productivity buckets (promoted set)
+Local change: code-review renamed to mp-code-review (clashes with Claude Code built-in /code-review)

@@ -1,0 +1,5 @@
+if(EXISTS "/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/test_obstacle_map_tests-b858cb2.cmake")
+  include("/Users/niklaskaulfers/RiderProjects/robo-doggog-go2/code/build-check/tests/test_obstacle_map_tests-b858cb2.cmake")
+else()
+  add_test(test_obstacle_map_NOT_BUILT-b858cb2 test_obstacle_map_NOT_BUILT-b858cb2)
+endif()

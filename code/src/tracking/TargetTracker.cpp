@@ -32,11 +32,20 @@ static constexpr float KEYPOINT_MIN_CONFIDENCE = 0.2f;
 // --- face evidence ---
 // how many people get their face checked per frame, the target always first
 static constexpr int MAX_FACE_CHECKS = 3;
-// evidence is -1..1: a match raises it toward 1 (a strong match all the way), a
-// mismatch drops it halfway to -1. This much is needed to count as the person, this
-// little to count as surely someone else
+// evidence is -1..1: a match raises it part of the way toward 1 (a strong match more),
+// a mismatch drops it part of the way toward -1. This much is needed to count as the
+// person, this little to count as surely someone else
 static constexpr float IDENTIFIED_EVIDENCE = 0.6f;
 static constexpr float REJECTED_EVIDENCE = -0.5f;
+// the steps are small enough that no single face decides: one false match on a
+// bystander (likely on a small, blurry face, and every visible face is checked every
+// frame) must not take the target over, one bad profile view of the target must not drop
+// them. Identifying takes 2 strong or 3 weak matches, rejecting 2 mismatches
+static constexpr float MATCH_STEP = 0.3f;
+static constexpr float STRONG_MATCH_STEP = 0.55f;
+static constexpr float MISMATCH_STEP = 0.35f;
+// faces smaller than this (frame pixels) are unreliable, they count half
+static constexpr float RELIABLE_FACE_SIZE = FaceRecognizer::MIN_MISMATCH_FACE_SIZE;
 // evidence fades slowly while the face isn't seen (per frame)
 static constexpr float EVIDENCE_DECAY = 0.99f;
 // another person's face evidence must beat the target's by this to take over
@@ -341,20 +350,24 @@ void TargetTracker::observeFaces(const cv::Mat& frame, Clock::time_point now) {
             t.faceEvidence *= EVIDENCE_DECAY;
             continue;
         }
+        const float weight = face.size >= RELIABLE_FACE_SIZE ? 1.0f : 0.5f;
         switch (face.verdict) {
             case Verdict::Match: {
                 const float strength = std::clamp((face.similarity - FaceRecognizer::MATCH_THRESHOLD) /
                                                   (FaceRecognizer::STRONG_MATCH - FaceRecognizer::MATCH_THRESHOLD), 0.0f, 1.0f);
-                t.faceEvidence += (1 - t.faceEvidence) * (0.5f + 0.5f * strength);
-                t.lastFaceMatch = now;
+                const float step = MATCH_STEP + (STRONG_MATCH_STEP - MATCH_STEP) * strength;
+                t.faceEvidence += (1 - t.faceEvidence) * step * weight;
                 if (identifiedByFace(t)) {
+                    // only an identified face counts as a match of the person (protects
+                    // them from being dropped by their clothes, blocks takeovers)
+                    t.lastFaceMatch = now;
                     t.verified = true;
                     t.excluded = false;
                 }
                 break;
             }
             case Verdict::Mismatch:
-                t.faceEvidence -= (t.faceEvidence + 1) * 0.5f;
+                t.faceEvidence -= (t.faceEvidence + 1) * MISMATCH_STEP * weight;
                 break;
             case Verdict::Unknown:
                 break;
@@ -469,7 +482,9 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
             for (auto& t : tracks) {
                 if (!t.matched || t.excluded || rejectedByFace(t)) continue;
                 if (seconds(lastSeen - t.firstSeen) > NEW_TRACK_SLACK) continue;
-                if (t.clothingSimilarity >= 0 && t.clothingSimilarity < TRACK_MIN_SIMILARITY) continue;
+                // their clothes must look like the target's; when the clothes are known
+                // but can't be seen (-1), that is no evidence for them either
+                if (!clothes.empty() && t.clothingSimilarity < TRACK_MIN_SIMILARITY) continue;
                 const float angle = CameraGeometry::angle(t.person.box, frameSize.width);
                 const float diff = std::abs(CameraGeometry::wrapAngle(angle - current.predictedAngle));
                 if (diff < bestDiff) {
@@ -517,7 +532,10 @@ void TargetTracker::learnFromTarget(Track& target, Clock::time_point now) {
     const bool trusted = target.verified || target.defining;
     const bool clear = unambiguous(target);
     const auto& face = target.face;
-    const bool faceMatch = face.found && face.verdict == Verdict::Match;
+    // a match only teaches the gallery and the clothes when the face evidence is
+    // conclusive: learning from one false match would make the wrong person the target
+    // for good
+    const bool faceMatch = face.found && face.verdict == Verdict::Match && identifiedByFace(target);
     const bool goodFace = face.found && face.size >= FaceRecognizer::MIN_LEARN_FACE_SIZE &&
                           face.quality >= FaceRecognizer::MIN_LEARN_QUALITY;
 
