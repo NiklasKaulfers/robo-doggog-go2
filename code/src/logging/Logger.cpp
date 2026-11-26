@@ -1,5 +1,6 @@
 #include "Logger.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 #include <iterator>
@@ -107,8 +108,16 @@ namespace robo::sdk::logging
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 if (queue.size() >= cfg.maxQueue) {
+                    // full: a warning or error pushes out the oldest debug/info record,
+                    // anything else (or with only warnings queued) is refused
                     dropped++;
-                    return;
+                    if (record.level < Level::Warn) return;
+                    const auto routine = std::find_if(queue.begin(), queue.end(),
+                                                      [](const LogRecord& r) { return r.level < Level::Warn; });
+                    if (routine == queue.end()) return;
+                    queue.erase(routine);
+                    // counts as handled, or flush() would wait for it forever
+                    handledTotal++;
                 }
                 queue.push_back(std::move(record));
                 queuedTotal++;

@@ -161,6 +161,39 @@ static void testDurability() {
     check(records.size() == 100 && records[99].message == "line 99" && records[99].fields == Fields {{"i", "99"}}, "content intact after reopening");
 }
 
+static void testOverflowKeepsWarnings() {
+    std::cout << "queue overflow keeps warnings and errors" << std::endl;
+    auto store = std::make_shared<LogStore>(tempDb("overflow-warnings"));
+    LoggerConfig cfg = quiet();
+    cfg.flushInterval = std::chrono::hours(1);
+    cfg.flushAtQueueSize = 0;
+    cfg.maxQueue = 100;
+    Logger logger(store, cfg);
+    for (int i = 0; i < 100; i++) logger.log(Level::Info, "Test", "info" + std::to_string(i));
+    for (int i = 0; i < 10; i++) logger.log(i % 2 ? Level::Error : Level::Warn, "Control", "problem" + std::to_string(i));
+    logger.log(Level::Debug, "Test", "debug while full");
+    logger.flush();
+
+    const auto records = store->fetchUnpushed(1000);
+    check(records.size() == 101, "the queue stays at 100, plus the notice (" + std::to_string(records.size()) + " saved)");
+    if (records.size() != 101) return;
+    check(records[0].message == "info10" && records[89].message == "info99", "the oldest info records made room");
+    bool problemsKept = true;
+    for (int i = 0; i < 10; i++) problemsKept = problemsKept && records[90 + i].message == "problem" + std::to_string(i);
+    check(problemsKept, "every warning and error kept, in order");
+    check(records[100].component == "Logger" && records[100].fields == Fields {{"dropped", "11"}},
+          "the notice counts the 10 pushed out and the 1 debug record refused");
+
+    // a queue full of warnings: then a new one is dropped too, memory stays bounded
+    auto store2 = std::make_shared<LogStore>(tempDb("overflow-all-warnings"));
+    Logger logger2(store2, cfg);
+    for (int i = 0; i < 105; i++) logger2.log(Level::Warn, "Control", "w" + std::to_string(i));
+    logger2.flush();
+    const auto records2 = store2->fetchUnpushed(1000);
+    check(records2.size() == 101 && records2[99].message == "w99" && records2[100].fields == Fields {{"dropped", "5"}},
+          "only warnings queued: the newest are dropped and counted");
+}
+
 static void testConcurrentProducers() {
     std::cout << "concurrent producers" << std::endl;
     auto store = std::make_shared<LogStore>(tempDb("concurrent"));
@@ -277,6 +310,44 @@ static void testCap() {
     for (const auto& r : after) newestKept = newestKept || firstWord(r.message) == "late299";
     check(newestKept, "the newest line is kept");
     check(store->usedBytes() <= cfg.maxStoreBytes + 8 * 1024, "the logger keeps the store near its cap (" + std::to_string(store->usedBytes()) + " bytes)");
+}
+
+static void testCapKeepsWarnings() {
+    std::cout << "size cap keeps warnings and errors" << std::endl;
+    auto store = std::make_shared<LogStore>(tempDb("cap-warnings"));
+    {
+        // warnings and errors mixed into the oldest records, none uploaded
+        Logger logger(store, quiet());
+        const std::string padding(400, 'x');
+        for (int i = 0; i < 2000; i++) {
+            const Level level = i < 1000 && i % 4 == 0 ? (i % 8 ? Level::Error : Level::Warn) : Level::Info;
+            logger.log(level, "Test", std::to_string(i) + " " + padding);
+        }
+    }
+    const int64_t full = store->usedBytes();
+
+    // half the size: only debug/info records go, oldest first
+    check(store->enforceCap(full / 2) > 0, "records deleted");
+    check(store->usedBytes() <= full / 2, "store within the cap");
+    auto left = store->fetchUnpushed(5000);
+    int problems = 0;
+    for (const auto& r : left) problems += r.level >= Level::Warn;
+    check(problems == 250, "all 250 warnings and errors kept (" + std::to_string(problems) + ")");
+    check(!left.empty() && firstWord(left.back().message) == "1999", "the newest info record kept");
+    int oldestInfo = -1;
+    for (const auto& r : left)
+        if (r.level == Level::Info) { oldestInfo = std::stoi(firstWord(r.message)); break; }
+    check(oldestInfo > 0, "the oldest info records were deleted (oldest left: " + std::to_string(oldestInfo) + ")");
+
+    // smaller than the warnings alone: they go as a last resort, oldest first, so the
+    // disk never fills up
+    check(store->enforceCap(80 * 1024) > 0, "a tiny cap deletes more");
+    check(store->usedBytes() <= 80 * 1024, "store within the tiny cap");
+    left = store->fetchUnpushed(5000);
+    bool onlyProblems = !left.empty();
+    for (const auto& r : left) onlyProblems = onlyProblems && r.level >= Level::Warn;
+    check(onlyProblems, "every info record went before any warning (" + std::to_string(left.size()) + " left)");
+    check(!left.empty() && left.size() < 250 && firstWord(left.back().message) == "996", "the newest warnings are kept, the oldest went");
 }
 
 // replaces std::cout and std::cerr while it exists
@@ -457,7 +528,9 @@ int main() {
     testDurability();
     testConcurrentProducers();
     testOverflow();
+    testOverflowKeepsWarnings();
     testCap();
+    testCapKeepsWarnings();
     testUnusableStore();
     testShipPending();
     testConsole();

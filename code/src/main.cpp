@@ -107,7 +107,7 @@ int main(int argc, char** argv)
         logging::setDefaultLogger(logSession.logger);
     }
 
-    std::cout << "Start" << std::endl;
+    logging::info("Main", "Start");
 
     // without this Ctrl+C would leave the avoidance service ignoring the remote controller
     std::signal(SIGINT, [](int) { Control::stopRequested = true; });
@@ -123,7 +123,7 @@ int main(int argc, char** argv)
     control.printStatus();
     if (!control.standup()) {
         // fail-safe: don't start following a robot that isn't standing
-        std::cerr << "error in standup" << std::endl;
+        logging::error("Main", "error in standup");
         return 1;
     }
     control.printStatus();

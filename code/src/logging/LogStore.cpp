@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iterator>
 #include <sqlite3.h>
 
 // the cap deletes this many records at a time, then measures again
@@ -344,23 +345,30 @@ namespace robo::sdk::logging
         int64_t deleted = 0;
         bool good = true;
         {
-            // pushed records are already uploaded, they go first; unpushed ones only when
-            // there are no pushed ones left. Oldest first in both cases
-            Statement deletePushed(db, "DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE pushed = 1 ORDER BY id LIMIT ?)");
-            Statement deleteUnpushed(db, "DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE pushed = 0 ORDER BY id LIMIT ?)");
-            good = deletePushed && deleteUnpushed;
-            bool pushedLeft = true;
-            while (good && used > maxBytes) {
-                sqlite3_stmt* stmt = pushedLeft ? deletePushed.stmt : deleteUnpushed.stmt;
-                sqlite3_bind_int(stmt, 1, EVICT_CHUNK);
-                good = sqlite3_step(stmt) == SQLITE_DONE;
-                sqlite3_reset(stmt);
+            // in this order, oldest first within each step, until the store fits:
+            // 1. pushed records, they are already uploaded
+            // 2. unpushed debug/info records
+            // 3. unpushed warnings and errors, only as a last resort so the disk can't fill up
+            Statement deletePushed(db, "DELETE FROM logs WHERE id IN"
+                                       " (SELECT id FROM logs WHERE pushed = 1 ORDER BY id LIMIT ?)");
+            Statement deleteRoutine(db, "DELETE FROM logs WHERE id IN"
+                                        " (SELECT id FROM logs WHERE pushed = 0 AND level < 2 ORDER BY id LIMIT ?)");
+            Statement deleteAny(db, "DELETE FROM logs WHERE id IN"
+                                    " (SELECT id FROM logs WHERE pushed = 0 ORDER BY id LIMIT ?)");
+            static_assert(static_cast<int>(Level::Warn) == 2, "the query above keeps levels from Warn up");
+            sqlite3_stmt* const steps[] = {deletePushed.stmt, deleteRoutine.stmt, deleteAny.stmt};
+            good = deletePushed && deleteRoutine && deleteAny;
+            size_t step = 0;
+            while (good && used > maxBytes && step < std::size(steps)) {
+                sqlite3_bind_int(steps[step], 1, EVICT_CHUNK);
+                good = sqlite3_step(steps[step]) == SQLITE_DONE;
+                sqlite3_reset(steps[step]);
                 if (!good) break;
                 const int changes = sqlite3_changes(db);
                 deleted += changes;
                 if (changes == 0) {
-                    if (!pushedLeft) break;  // nothing left at all
-                    pushedLeft = false;
+                    // nothing of this kind left, on to the next
+                    step++;
                     continue;
                 }
                 used = usedBytesLocked();

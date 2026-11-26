@@ -1,7 +1,6 @@
 #include "Control.h"
 
 #include <cmath>
-#include <iostream>
 #include <string>
 #include <vector>
 #include "../logging/Logger.h"
@@ -118,15 +117,18 @@ namespace robo::sdk::core
     void Control::printStatus()
     {
         std::lock_guard<std::mutex> lock(stateMutex);
-        std::cout << "Control status:" << std::endl;
-        std::cout << "  position: " << state.position()[0] << ", " << state.position()[1] << ", " << state.position()[2] << std::endl;
-        std::cout << "  temperature: " << static_cast<uint32_t>(state.imu_state().temperature()) << std::endl;
+        const std::string position = logging::text(state.position()[0], ", ", state.position()[1], ", ", state.position()[2]);
+        const std::string temperature = std::to_string(static_cast<uint32_t>(state.imu_state().temperature()));
         // the firmware may report modes newer than this table
-        const int mode = int(state.mode());
-        std::cout << "  mode: " << (mode >= 0 && mode < int(FSM_STATE_STR.size()) ? FSM_STATE_STR[mode] : "UNKNOWN (" + std::to_string(mode) + ")") << std::endl;
-        std::cout << "  progress: " << state.progress() << std::endl;
-        std::cout << "  errorCode: " << state.error_code() << std::endl;
-        std::cout << std::endl << std::flush;
+        const int modeNumber = int(state.mode());
+        const std::string mode = modeNumber >= 0 && modeNumber < int(FSM_STATE_STR.size())
+                                     ? FSM_STATE_STR[modeNumber] : "UNKNOWN (" + std::to_string(modeNumber) + ")";
+        const std::string progress = logging::text(state.progress());
+        const std::string errorCode = logging::text(state.error_code());
+        logging::info("Control", "status: position " + position + ", temperature " + temperature + ", mode " + mode
+                                     + ", progress " + progress + ", errorCode " + errorCode,
+                      {{"position", position}, {"temperature", temperature}, {"mode", mode},
+                       {"progress", progress}, {"errorCode", errorCode}});
     }
 
     void Control::hello()

@@ -22,7 +22,8 @@ namespace robo::sdk::logging
         std::chrono::milliseconds flushInterval {500};
         // and as soon as this many are queued (0 = only on the timer)
         size_t flushAtQueueSize = 1000;
-        // records beyond this are dropped (and counted) instead of growing memory
+        // records beyond this are dropped (and counted) instead of growing memory; a warning
+        // or error pushes out the oldest queued debug/info record instead
         size_t maxQueue = 10000;
         // also print "[Component] message", debug/info to stdout, warn/error to stderr
         bool consoleEcho = true;

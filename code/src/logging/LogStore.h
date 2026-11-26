@@ -46,8 +46,9 @@ namespace robo::sdk::logging
         bool markPushed(const std::vector<int64_t>& seqs);
         // bytes the records take in the file (freed pages don't count, they are reused)
         int64_t usedBytes();
-        // keeps usedBytes() at most maxBytes: deletes the oldest pushed records first, then
-        // the oldest unpushed ones. Returns how many records were deleted, -1 on failure
+        // keeps usedBytes() at most maxBytes, deleting oldest first: pushed records, then
+        // unpushed debug/info, and unpushed warnings/errors only if that is not enough.
+        // Returns how many records were deleted, -1 on failure
         int64_t enforceCap(int64_t maxBytes);
 
     private:
