@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
-#include <iostream>
 #include <sstream>
 #include "opencv2/imgproc.hpp"
 #include "CameraGeometry.h"
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::tracking;
 using namespace robo::sdk::ml;
@@ -106,7 +108,7 @@ bool TargetTracker::loadReferencePhotos(const std::string& folder) {
     const int count = faces.enrollFolder(folder);
     if (count == 0) return false;
     referencePhotos = true;
-    std::cout << "[Tracker] " << count << " reference photo(s) loaded, only the person in them is followed" << std::endl;
+    logging::info("Tracker", logging::text(count, " reference photo(s) loaded, only the person in them is followed"));
     return true;
 }
 
@@ -210,7 +212,7 @@ const TargetTracker::Status& TargetTracker::update(const std::vector<PersonDetec
         // is where now. Start over with the people in view; the world track is kept for
         // finding the target again
         if (!tracks.empty())
-            std::cout << "[Tracker] no frames for " << num(dt, 1) << "s, forgetting who was where in the image" << std::endl;
+            logging::info("Tracker", logging::text("no frames for ", num(dt, 1), "s, forgetting who was where in the image"));
         tracks.clear();
         dt = 0.1f;
         yawChange = 0;
@@ -398,7 +400,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
             // not seen this frame, the track waits for them a few frames
             current.state = target->misses >= LOST_FRAMES ? State::Lost : State::Tracking;
             if (current.state == State::Lost && !lostLogged) {
-                std::cout << "[Tracker] person out of view, searching" << std::endl;
+                logging::info("Tracker", "person out of view, searching");
                 lostLogged = true;
             }
             return;
@@ -420,7 +422,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
             details = "clothing similarity " + num(target->clothingSimilarity);
         }
         if (dropReason) {
-            std::cout << "[Tracker] dropping the person followed, " << dropReason << " (" << details << ")" << std::endl;
+            logging::info("Tracker", logging::text("dropping the person followed, ", dropReason, " (", details, ")"));
             // the continuity of the track is in doubt, so is the evidence it collected:
             // it is not trusted (learned from) anymore
             target->verified = target->defining = false;
@@ -444,7 +446,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         targetId = -1;
         current.state = State::Lost;
         if (!lostLogged) {
-            std::cout << "[Tracker] person out of view, searching" << std::endl;
+            logging::info("Tracker", "person out of view, searching");
             lostLogged = true;
         }
     }
@@ -460,8 +462,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
                 if (!better || t.faceEvidence > better->faceEvidence) better = &t;
             }
             if (better) {
-                std::cout << "[Tracker] the face of someone else matches better (" << num(better->face.similarity)
-                          << "), switching to them" << std::endl;
+                logging::info("Tracker", logging::text("the face of someone else matches better (", num(better->face.similarity), "), switching to them"));
                 target = better;
                 targetId = better->id;
                 current.foundBy = "the face of someone else matches better";
@@ -533,8 +534,7 @@ void TargetTracker::chooseTarget(Clock::time_point now) {
         targetId = chosen->id;
         targetChosen = true;
         current.foundBy = how;
-        std::cout << "[Tracker] " << (haveWorldTrack ? "found the person again" : "found the person, following")
-                  << " (" << how << ")" << std::endl;
+        logging::info("Tracker", logging::text((haveWorldTrack ? "found the person again" : "found the person, following"), " (", how, ")"));
     }
 
     // the target's own track matched again after they were lost for a few frames
@@ -569,8 +569,7 @@ void TargetTracker::learnFromTarget(Track& target, Clock::time_point now) {
         cameraReferences++;
         target.verified = true;
         target.lastFaceMatch = now;
-        std::cout << "[Tracker] learned the person's face from the camera (" << cameraReferences << "/"
-                  << MAX_CAMERA_REFERENCES << ")" << std::endl;
+        logging::info("Tracker", logging::text("learned the person's face from the camera (", cameraReferences, "/", MAX_CAMERA_REFERENCES, ")"));
     } else if (faceMatch && clear) {
         faces.learn(face.feature, false);
     }
@@ -636,7 +635,6 @@ void TargetTracker::logStatus(const Track* target, Clock::time_point now) {
     lastStatusLog = now;
 
     std::ostringstream s;
-    s << "[Tracker] ";
     if (target && current.visible) {
         s << "following: distance " << num(CameraGeometry::distance(target->person.box, frameSize.width), 1) << "m";
         if (target->face.found) s << ", face " << num(target->face.similarity);
@@ -650,7 +648,7 @@ void TargetTracker::logStatus(const Track* target, Clock::time_point now) {
     }
     s << " | people in view " << std::count_if(tracks.begin(), tracks.end(), [](const Track& t) { return t.matched; })
       << ", faces known " << faces.gallerySize() << ", clothing views " << clothes.size() << " (" << clothes.anchors() << " anchors)";
-    std::cout << s.str() << std::endl;
+    logging::info("Tracker", s.str());
 }
 
 void TargetTracker::drawDebug(cv::Mat& image) const {

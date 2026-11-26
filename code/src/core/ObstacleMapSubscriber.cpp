@@ -2,9 +2,11 @@
 
 #include <cmath>
 #include <functional>
-#include <iostream>
+#include "../logging/Logger.h"
 
 #define TOPIC_HEIGHT_MAP "rt/utlidar/height_map_array"
+
+namespace logging = robo::sdk::logging;
 
 namespace robo::sdk::core
 {
@@ -23,7 +25,7 @@ namespace robo::sdk::core
         const auto& msg = *static_cast<const unitree_go::msg::dds_::HeightMap_*>(message);
         if (!received) {
             received = true;
-            std::cout << "[ObstacleMap] receiving height map, frame: " << msg.frame_id() << std::endl;
+            logging::info("ObstacleMap", logging::text("receiving height map, frame: ", msg.frame_id()));
         }
 
         HeightMapFrame frame;

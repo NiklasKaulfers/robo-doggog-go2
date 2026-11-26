@@ -24,7 +24,9 @@ This file describes what the code does and how it is put together.
    going (Pursue), turns once on the spot (LookAround), roams a growing area around
    where they were last seen (Sweep), and after 10 minutes stops and watches (GaveUp).
    `FollowPerson` connects it to the robot and slows down on stairs.
-4. **Stays safe.** Movement only goes through the Go2 obstacle avoidance service. Any
+4. **Keeps a log.** Every log line is also saved with timestamps, level and component in
+   a local SQLite file on the dog, ready to be uploaded when there is a connection.
+5. **Stays safe.** Movement only goes through the Go2 obstacle avoidance service. Any
    remote controller input pauses the program, and Ctrl+C hands control back cleanly.
 
 ## Architecture
@@ -59,13 +61,18 @@ This file describes what the code does and how it is put together.
 | `src/tracking/` | **`TargetTracker`** is the decision maker: it associates detections to tracks, accumulates face and clothing evidence, picks and keeps the target, drops it when clothes or face contradict, takes it over when a face matches someone else, and predicts where a lost person went (in the odometry frame). **`CameraGeometry.h`** converts pixels to angle and distance. |
 | `src/follow/` | **`FollowPlanner`** decides following and searching, without a robot: one `step()` per camera frame takes the detections, the frame, the robot pose and the time, and returns forward/yaw speed, the phase (`WaitingForTarget`, `Following`, `Pursue`, `LookAround`, `Sweep`, `GaveUp`) and the tracker's status. It owns the `TargetTracker` and an `ExplorePlanner` for the Sweep (with a `SearchFocus`: goals only inside a circle, spots the way the person walked score higher). `pause()` keeps time the robot wasn't driven by it out of the search timers, `reset()` is the operator reset. Search constants are at the top of `FollowPlanner.cpp`. |
 | `src/tricks/` | Behaviours built on `Control`. **`FollowPerson`** is the real application: camera, pose detector, remote priority, explore combo, watchdogs, stairs, debug frames; the decisions are `FollowPlanner`'s. **`Explore`** roams to new spots. **`TurnToPerson`** and **`SitStandApproach`** are earlier experiments (gesture and turn demos), kept but not used by `main`. |
-| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`trackertest`** (self-test of the tracking logic with drawn people), **`followtest`** (self-test of `FollowPlanner` with a simulated robot, simulated people drawn into camera frames and synthetic terrain: following, bystanders, obstacles, Pursue, LookAround, Sweep, GaveUp, finding the target again in every phase, paused time, operator reset), **`appearancetest`** (self-test of the clothes model), **`exploretest`** (self-test of `ExplorePlanner` with a simulated robot: stale map, frame mismatch, unreachable goals, timeouts, obstacle slow-down, a long run in a walled room) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
+| `src/logging/` | Structured log, see [ADR 0001](../docs/adr/0001-local-sqlite-log-outbox.md). Every log line is a **`LogRecord`** (wall and steady timestamps, session id, level, component, message, key/value fields). The **`Logger`** prints it as `[Component] message` like before (debug/info on stdout, warn/error on stderr) and queues it; a background thread saves the queue to the **`LogStore`**, a local SQLite outbox (`--log-db`, default `logs/robo.db`) that survives crashes and restarts and keeps a "pushed" flag per record. The store is capped (`--log-max-mb`): uploaded records are deleted first, then the oldest. Code without a logger passed in calls `logging::info/warn/...`, which use the logger `main` installs, or print to the console when there is none (tools, tests). **`Uploader`** + `shipPending` are the seam for a future upload to DynamoDB/MongoDB; there is no network code yet. If the store fails, logging continues on the console only. |
+| `tools/` | Offline tools that need no robot: **`facecheck`** (quality of reference photos), **`logtest`** (self-test of the logging library on a real SQLite file: round trip, sessions, pushed flag, durability, concurrent producers, queue overflow, the size cap, a broken store, `shipPending`, console format), **`trackertest`** (self-test of the tracking logic with drawn people), **`followtest`** (self-test of `FollowPlanner` with a simulated robot, simulated people drawn into camera frames and synthetic terrain: following, bystanders, obstacles, Pursue, LookAround, Sweep, GaveUp, finding the target again in every phase, paused time, operator reset), **`appearancetest`** (self-test of the clothes model), **`exploretest`** (self-test of `ExplorePlanner` with a simulated robot: stale map, frame mismatch, unreachable goals, timeouts, obstacle slow-down, a long run in a walled room) and **`maptest`** (self-test of `ObstacleMap` with synthetic height maps: walls, gaps, stairs, drops, a person at the goal, memory, hysteresis; `--bench` also times the planner). |
 | `res/` | Models: `face_detection_yunet_2022mar.onnx`, `face_recognition_sface_2021dec.onnx`, `movenet-multipose.tflite`, `movenet-singlepose.tflite`. `res/target/` (git-ignored) holds the reference photos. |
 
 ### Dependency split
 
-The CMake project builds four parts:
+The CMake project builds five parts:
 
+- **`logging`** (static library): `Logger`, `LogStore`, `Uploader`. Needs only SQLite: the
+  system's if CMake finds it (macOS has it), otherwise the official amalgamation is
+  downloaded at configure time (pinned by hash) and built in, so nothing is installed on
+  the Jetson. Every other part links it. Built with `-DFOLLOW_TOOLS_ONLY=ON`, tested by `logtest`.
 - **`recognition`** (static library): `FaceRecognizer`, `Appearance`, `TargetTracker`,
   `CameraGeometry`, `PersonDetection`. Needs only OpenCV, so it is shared by the app
   and the offline tools and can be built on a laptop with `-DFOLLOW_TOOLS_ONLY=ON`.
@@ -141,6 +148,7 @@ cmake --build build-tools
 ./build-tools/exploretest     # needs nothing, ~40 s (simulated room runs)
 ./build-tools/appearancetest  # needs nothing
 ./build-tools/followtest      # run from this folder, needs ./res, a few seconds
+./build-tools/logtest         # needs nothing, under a second
 ```
 
-Binaries: `app` (robot), `facecheck`, `trackertest`, `appearancetest`, `maptest`, `exploretest`, `followtest`.
+Binaries: `app` (robot), `logtest`, `facecheck`, `trackertest`, `appearancetest`, `maptest`, `exploretest`, `followtest`.

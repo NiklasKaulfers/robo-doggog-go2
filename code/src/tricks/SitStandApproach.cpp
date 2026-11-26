@@ -3,6 +3,9 @@
 #include <chrono>
 #include <thread>
 #include "../ml/movenet/Singlepose.h"
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
@@ -24,7 +27,7 @@ void SitStandApproach::runWithSinglepose() {
 
         videoClient.GetImageSample(imgData);
         if (!detector.run(imgData)) {
-            std::cerr << "[TurnToPerson] error in detector.run()" << std::endl;
+            logging::error("TurnToPerson", "error in detector.run()");
             continue;
         }
 

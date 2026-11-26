@@ -4,6 +4,9 @@
 #include <thread>
 #include "../ml/movenet/Singlepose.h"
 #include "../ml/movenet/Multipose.h"
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
@@ -26,7 +29,7 @@ void TurnToPerson::runWithSinglepose() {
 
         videoClient.GetImageSample(imgData);
         if (!detector.run(imgData)) {
-            std::cerr << "[TurnToPerson] error in detector.run()" << std::endl;
+            logging::error("TurnToPerson", "error in detector.run()");
             continue;
         }
 
@@ -35,7 +38,7 @@ void TurnToPerson::runWithSinglepose() {
         if (mark.confidence < 0.15) {
             countNotFound++;
             if (countNotFound > 8) {
-                std::cout << "[TurnToPerson] target lost" << std::endl;
+                logging::info("TurnToPerson", "target lost");
                 roboControl.stopMovement();
             }
             continue;
@@ -60,7 +63,7 @@ void TurnToPerson::runWithMultipose() {
 
         videoClient.GetImageSample(imgData);
         if (!detector.run(imgData)) {
-            std::cerr << "[TurnToPerson] error in detector.run()" << std::endl;
+            logging::error("TurnToPerson", "error in detector.run()");
             continue;
         }
 
@@ -73,12 +76,12 @@ void TurnToPerson::runWithMultipose() {
                 detectionIdx = d;
             }
         }
-        std::cout << "[TurnToPerson] using detection " << detectionIdx << std::endl;
+        logging::info("TurnToPerson", logging::text("using detection ", detectionIdx));
 
         if (mark.confidence < 0.15) {
             countNotFound++;
             if (countNotFound > 8) {
-                std::cout << "[TurnToPerson] target lost" << std::endl;
+                logging::info("TurnToPerson", "target lost");
                 roboControl.stopMovement();
             }
             continue;

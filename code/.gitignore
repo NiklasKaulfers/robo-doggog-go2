@@ -5,3 +5,6 @@ res/target/
 # build output and debug frames written by `app --debug`
 build/
 debug/
+
+# the log saved by the app (default --log-db)
+logs/

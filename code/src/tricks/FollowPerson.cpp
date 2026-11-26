@@ -11,6 +11,9 @@
 #include <thread>
 #include "opencv2/imgcodecs.hpp"
 #include "../ml/movenet/Multipose.h"
+#include "../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::examples;
 using namespace robo::sdk::ml;
@@ -86,22 +89,22 @@ void FollowPerson::runWithMultipose() {
     if (!planner.init()) return;
     if (!targetImages.empty()) {
         if (!planner.loadReferencePhotos(targetImages)) {
-            std::cerr << "[FollowPerson] no usable face found in the photos in " << targetImages << std::endl;
+            logging::error("FollowPerson", logging::text("no usable face found in the photos in ", targetImages));
             return;
         }
-        std::cout << "[FollowPerson] waiting to see the face of the person from the photos" << std::endl;
+        logging::info("FollowPerson", "waiting to see the face of the person from the photos");
     } else {
-        std::cout << "[FollowPerson] no photos given, following the first person seen" << std::endl;
+        logging::info("FollowPerson", "no photos given, following the first person seen");
     }
 
     if (!debugDir.empty()) {
         std::error_code error;
         std::filesystem::create_directories(debugDir, error);
         if (error) {
-            std::cerr << "[FollowPerson] cannot create " << debugDir << ": " << error.message() << ", debug frames off" << std::endl;
+            logging::warn("FollowPerson", logging::text("cannot create ", debugDir, ": ", error.message(), ", debug frames off"));
             debugDir.clear();
         } else {
-            std::cout << "[FollowPerson] writing debug frames to " << debugDir << std::endl;
+            logging::info("FollowPerson", logging::text("writing debug frames to ", debugDir));
         }
     }
 
@@ -134,9 +137,9 @@ void FollowPerson::runWithMultipose() {
             exploring = !exploring;
             if (exploring) {
                 explorer.reset();
-                std::cout << "[FollowPerson] exploring" << std::endl;
+                logging::info("FollowPerson", "exploring");
             } else {
-                std::cout << "[FollowPerson] stopped exploring, following again" << std::endl;
+                logging::info("FollowPerson", "stopped exploring, following again");
             }
             // operator reset: afterwards the next person (or the one in the photos) is followed
             planner.reset();
@@ -155,8 +158,8 @@ void FollowPerson::runWithMultipose() {
         const bool stateOld = roboControl.stateAge() > STATE_TIMEOUT;
         if (stateOld != stateStale) {
             stateStale = stateOld;
-            if (stateStale) std::cerr << "[FollowPerson] no fresh robot state, stopping" << std::endl;
-            else std::cout << "[FollowPerson] robot state is updating again" << std::endl;
+            if (stateStale) logging::error("FollowPerson", "no fresh robot state, stopping");
+            else logging::info("FollowPerson", "robot state is updating again");
         }
         if (stateStale) {
             stop();
@@ -178,8 +181,8 @@ void FollowPerson::runWithMultipose() {
         const bool imageOk = imageStatus == 0 && !imgData.empty();
         if (!imageOk || !detector.run(imgData)) {
             if (!cameraFailed) {
-                if (!imageOk) std::cerr << "[FollowPerson] no camera image (status " << imageStatus << "), stopping" << std::endl;
-                else std::cerr << "[FollowPerson] error in detector.run(), stopping" << std::endl;
+                if (!imageOk) logging::error("FollowPerson", logging::text("no camera image (status ", imageStatus, "), stopping"));
+                else logging::error("FollowPerson", "error in detector.run(), stopping");
             }
             cameraFailed = true;
             stop();
@@ -187,7 +190,7 @@ void FollowPerson::runWithMultipose() {
             continue;
         }
         if (cameraFailed) {
-            std::cout << "[FollowPerson] camera and detector working again" << std::endl;
+            logging::info("FollowPerson", "camera and detector working again");
             cameraFailed = false;
         }
 
@@ -215,13 +218,13 @@ void FollowPerson::saveDebugFrame(const cv::Mat& frame, std::chrono::steady_cloc
     name << "frame_" << std::setw(5) << std::setfill('0') << debugFrameCount++ << ".jpg";
     const auto path = std::filesystem::path(debugDir) / name.str();
     if (!cv::imwrite(path.string(), annotated, {cv::IMWRITE_JPEG_QUALITY, 80}))
-        std::cerr << "[FollowPerson] could not write " << path << std::endl;
+        logging::warn("FollowPerson", logging::text("could not write ", path));
 }
 
 void FollowPerson::drive(float x, float z) {
     if (stairMode) {
         if (std::abs(roboControl.roll()) > STAIR_MAX_ROLL) {
-            if (moving) std::cerr << "[FollowPerson] tilted sideways on stairs, stopping" << std::endl;
+            if (moving) logging::warn("FollowPerson", "tilted sideways on stairs, stopping");
             stop();
             return;
         }
@@ -250,7 +253,7 @@ void FollowPerson::updateStairMode(int& stairSamples, float& levelHeight) {
         stairSamples = (tilted || heightChanged) ? stairSamples + 1 : 0;
 
         if (stairSamples >= STAIR_ENTER_SAMPLES) {
-            std::cout << "[FollowPerson] stairs detected, moving carefully" << std::endl;
+            logging::info("FollowPerson", "stairs detected, moving carefully");
             stairMode = true;
             stairSamples = 0;
         } else if (stairSamples == 0) {
@@ -260,7 +263,7 @@ void FollowPerson::updateStairMode(int& stairSamples, float& levelHeight) {
         stairSamples = pitch < STAIR_PITCH_EXIT ? stairSamples + 1 : 0;
 
         if (stairSamples >= STAIR_EXIT_SAMPLES) {
-            std::cout << "[FollowPerson] back on level ground" << std::endl;
+            logging::info("FollowPerson", "back on level ground");
             stairMode = false;
             stairSamples = 0;
             levelHeight = height;

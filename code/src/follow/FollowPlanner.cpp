@@ -2,14 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include "opencv2/imgproc.hpp"
+#include "../logging/Logger.h"
 #include "../tracking/CameraGeometry.h"
 
 using namespace robo::sdk::follow;
 using robo::sdk::tracking::CameraGeometry;
 using robo::sdk::tracking::RobotPose;
 using robo::sdk::tracking::TargetTracker;
+namespace logging = robo::sdk::logging;
 
 // --- following ---
 static constexpr float TARGET_DISTANCE = 0.5f;
@@ -71,7 +72,7 @@ static std::string num(float value, int digits = 1) {
 FollowPlanner::FollowPlanner(core::ObstacleMap& obstacleMap, uint32_t seed)
     : map(obstacleMap), sweep(obstacleMap, seed, [this] { return activeSeconds; }) {
     logger = [](const std::string& message, bool warning) {
-        (warning ? std::cerr : std::cout) << "[Follow] " << message << std::endl;
+        logging::log(warning ? logging::Level::Warn : logging::Level::Info, "Follow", message);
     };
     sweep.setLogger([this](const std::string& message) { say("sweep: " + message); });
 }

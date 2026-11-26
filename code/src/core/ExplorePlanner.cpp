@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <iostream>
 #include <vector>
+#include "../logging/Logger.h"
 
 // hard limits, not configurable
 static constexpr float MAX_FORWARD_SPEED = 0.4f;
@@ -24,7 +24,7 @@ namespace robo::sdk::core
         }
         cfg.exploreSpeed = std::clamp(cfg.exploreSpeed, 0.0f, MAX_FORWARD_SPEED);
         cfg.lookAroundSpeed = std::clamp(cfg.lookAroundSpeed, 0.0f, MAX_YAW_SPEED);
-        logger = [](const std::string& message) { std::cout << "[Explore] " << message << std::endl; };
+        logger = [](const std::string& message) { logging::info("Explore", message); };
     }
 
     void ExplorePlanner::setLogger(Logger newLogger)

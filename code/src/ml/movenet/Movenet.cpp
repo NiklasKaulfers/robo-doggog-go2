@@ -3,6 +3,9 @@
 #include <cmath>
 
 #include "opencv2/opencv.hpp"
+#include "../../logging/Logger.h"
+
+namespace logging = robo::sdk::logging;
 
 using namespace robo::sdk::ml::movenet;
 
@@ -55,12 +58,12 @@ bool Movenet::processInput(const std::vector<uint8_t> &data, litert::CompiledMod
     if (tensorType.Layout().Dimensions()[1] != img.rows || tensorType.Layout().Dimensions()[2] != img.cols) {
         const auto status = model.ResizeInputTensor(0, litert::Span<const int>({1, img.rows, img.cols, 3}));
         if (!status.HasValue()) {
-            std::cerr << "[Movenet] error while resizing input tensor: " << status.Error().Message() << std::endl;
+            logging::error("Movenet", logging::text("error while resizing input tensor: ", status.Error().Message()));
             return false;
         }
         auto newTensor = model.CreateInputBuffers();
         if (!newTensor.HasValue()) {
-            std::cerr << "[Movenet] error while resizing input tensor: " << newTensor.Error().Message() << std::endl;
+            logging::error("Movenet", logging::text("error while resizing input tensor: ", newTensor.Error().Message()));
             return false;
         }
         dest = std::move(newTensor.Value()[0]);
